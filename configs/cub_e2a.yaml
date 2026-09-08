@@ -1,0 +1,14 @@
+model_name: facebook/dinov3-vitb16-pretrain-lvd1689m
+model_revision: 5931719e67bbdb9737e363e781fb0c67687896bc
+representation: cls
+data_root: data
+split: [train, eval]
+batch_size: 32
+num_workers: 4
+device: cuda
+recall_k: [1, 2, 4, 8]
+retrieval_chunk_size: 256
+output_dir: outputs/cls
+seed: 42
+num_threads: 4
+token: 
