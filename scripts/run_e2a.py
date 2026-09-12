@@ -9,7 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run E2A-M1 extraction and evaluation.")
+    parser = argparse.ArgumentParser(description="Run E2A extraction and evaluation.")
     parser.add_argument(
         "--config", default=str(PROJECT_ROOT / "configs" / "cub_e2a.yaml")
     )

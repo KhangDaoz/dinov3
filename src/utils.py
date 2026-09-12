@@ -27,17 +27,37 @@ REQUIRED_CONFIG_KEYS = {
 }
 
 
-def load_config(path):
+def _load_config_mapping(path, seen):
     path = Path(path)
+    resolved = path.resolve()
+    if resolved in seen:
+        raise ValueError(f"Phát hiện vòng lặp config extends tại: {path}")
+    seen.add(resolved)
     with path.open(encoding="utf-8") as file:
         config = yaml.safe_load(file)
     if not isinstance(config, dict):
         raise ValueError(f"Config phải là mapping YAML: {path}")
+    parent = config.pop("extends", None)
+    if parent is not None:
+        parent_path = Path(parent)
+        if not parent_path.is_absolute():
+            parent_path = path.parent / parent_path
+        inherited = _load_config_mapping(parent_path, seen)
+        inherited.update(config)
+        config = inherited
+    seen.remove(resolved)
+    return config
+
+
+def load_config(path):
+    config = _load_config_mapping(Path(path), set())
     missing = sorted(REQUIRED_CONFIG_KEYS - config.keys())
     if missing:
         raise ValueError(f"Config thiếu khóa: {', '.join(missing)}")
-    if config["representation"] != "cls":
-        raise ValueError("E2A-M1 chỉ hỗ trợ representation='cls'")
+    supported_representations = {"cls", "mean_patch"}
+    if config["representation"] not in supported_representations:
+        supported = ", ".join(sorted(supported_representations))
+        raise ValueError(f"representation phải là một trong: {supported}")
     if config["split"] != ["train", "eval"]:
         raise ValueError("E2A-M1 yêu cầu split: [train, eval]")
     for key in ("batch_size", "retrieval_chunk_size", "num_threads"):

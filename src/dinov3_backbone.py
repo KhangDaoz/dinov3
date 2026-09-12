@@ -5,22 +5,20 @@ from pathlib import Path
 
 from transformers import AutoImageProcessor, AutoModel
 import torch
-import yaml
 from dataset import CUBirds
+from utils import load_config
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "cub_e2a.yaml"
 
 def load_processor(config_path=CONFIG_PATH):
-    with open(config_path, encoding="utf-8") as file:
-        config = yaml.safe_load(file)
+    config = load_config(config_path)
     return AutoImageProcessor.from_pretrained(config["model_name"], revision=config["model_revision"], token=config.get("token", None))
 
 
 def load_dinov3(device=None, config_path=CONFIG_PATH):
-    with open(config_path, encoding="utf-8") as file:
-        config = yaml.safe_load(file)
+    config = load_config(config_path)
     model_name = config["model_name"]
     processor = load_processor(config_path)
 

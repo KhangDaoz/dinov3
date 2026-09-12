@@ -1,0 +1,3 @@
+extends: cub_e2a.yaml
+representation: mean_patch
+output_dir: outputs/mean_patch

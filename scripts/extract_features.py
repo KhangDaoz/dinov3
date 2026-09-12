@@ -14,7 +14,7 @@ if str(SRC_DIR) not in sys.path:
 
 from dataset import CUBirds, collate_pil_batch
 from dinov3_backbone import extract_last_hidden_state, load_dinov3
-from representations import cls_embedding
+from representations import build_embedding
 from utils import (
     atomic_json_save,
     atomic_torch_save,
@@ -48,9 +48,17 @@ def extract_split(model, processor, device, config, split):
     label_batches = []
     paths = []
     offset = 0
+    register_count = int(getattr(model.config, "num_register_tokens", 0))
+    observed_patch_counts = set()
     for images, labels in tqdm(loader, desc=f"Extract {split}", unit="batch"):
         tokens, _ = extract_last_hidden_state(model, processor, images, device)
-        embeddings = cls_embedding(tokens)
+        patch_count = tokens.shape[1] - 1 - register_count
+        if patch_count <= 0:
+            raise RuntimeError("Backbone output không chứa patch token")
+        observed_patch_counts.add(patch_count)
+        embeddings = build_embedding(
+            config["representation"], tokens, register_count
+        )
         if embeddings.shape[0] != labels.shape[0]:
             raise RuntimeError("Batch embeddings và labels không khớp")
         embedding_batches.append(embeddings)
@@ -64,7 +72,16 @@ def extract_split(model, processor, device, config, split):
         raise RuntimeError(f"Embedding shape không hợp lệ: {tuple(embeddings.shape)}")
     if len(paths) != expected_count:
         raise RuntimeError("Số paths không khớp embeddings")
-    return embeddings, labels, paths
+    if len(observed_patch_counts) != 1:
+        raise RuntimeError(
+            f"Số patch tokens không nhất quán: {sorted(observed_patch_counts)}"
+        )
+    token_layout = {
+        "cls_tokens": 1,
+        "register_tokens": register_count,
+        "patch_tokens": observed_patch_counts.pop(),
+    }
+    return embeddings, labels, paths, token_layout
 
 
 def output_paths(output_dir):
@@ -99,8 +116,12 @@ def run_extraction(config_path, overwrite=False):
         )
         split_timings[split] = time.perf_counter() - split_started
 
-    train_embeddings, train_labels, train_paths = split_results["train"]
-    test_embeddings, test_labels, test_paths = split_results["eval"]
+    train_embeddings, train_labels, train_paths, train_layout = split_results["train"]
+    test_embeddings, test_labels, test_paths, test_layout = split_results["eval"]
+    if train_layout != test_layout:
+        raise RuntimeError(
+            f"Token layout train/eval không khớp: {train_layout} != {test_layout}"
+        )
     labels_payload = {
         "train": {"labels": train_labels, "paths": train_paths},
         "test": {"labels": test_labels, "paths": test_paths},
@@ -122,7 +143,13 @@ def run_extraction(config_path, overwrite=False):
             "processor": processor.to_dict(),
             "device": str(device),
             "dtype": "float32",
-            "representation": "cls",
+            "representation": config["representation"],
+            "pooling": (
+                "final_layer_cls"
+                if config["representation"] == "cls"
+                else "final_layer_mean_spatial_patches"
+            ),
+            "token_layout": train_layout,
             "embedding_dimension": int(train_embeddings.shape[1]),
             "counts": {"train": len(train_labels), "test": len(test_labels)},
             "split_seconds": split_timings,
@@ -135,7 +162,7 @@ def run_extraction(config_path, overwrite=False):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Extract E2A-M1 CLS embeddings.")
+    parser = argparse.ArgumentParser(description="Extract E2A embeddings.")
     parser.add_argument(
         "--config", default=str(PROJECT_ROOT / "configs" / "cub_e2a.yaml")
     )

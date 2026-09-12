@@ -77,6 +77,12 @@ def run_evaluation(config_path):
         raise FileNotFoundError(f"Thiếu artifacts: {', '.join(missing)}")
 
     metrics = load_json(paths["metrics.json"])
+    cached_representation = metrics.get("extraction", {}).get("representation")
+    if cached_representation != config["representation"]:
+        raise ValueError(
+            f"Cache representation {cached_representation!r} không khớp "
+            f"config {config['representation']!r}"
+        )
     verify_hashes(paths, metrics.get("cache_sha256", {}))
     train_embeddings = torch.load(
         paths["train_embeddings.pt"], map_location="cpu", weights_only=True
@@ -119,7 +125,7 @@ def run_evaluation(config_path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate E2A-M1 CLS retrieval.")
+    parser = argparse.ArgumentParser(description="Evaluate E2A retrieval.")
     parser.add_argument(
         "--config", default=str(PROJECT_ROOT / "configs" / "cub_e2a.yaml")
     )

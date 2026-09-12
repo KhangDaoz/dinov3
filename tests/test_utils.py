@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 import torch
 
 from src.utils import (
@@ -9,6 +10,7 @@ from src.utils import (
     public_config,
     resolve_device,
     sha256_file,
+    load_config,
 )
 
 
@@ -39,3 +41,48 @@ def test_atomic_artifacts_round_trip(tmp_path):
     assert load_json(json_path) == {"status": "ok"}
     assert len(sha256_file(tensor_path)) == 64
     assert not list(Path(tensor_path.parent).glob(".*"))
+
+
+def test_config_inheritance_overrides_representation_and_output(tmp_path):
+    base = tmp_path / "base.yaml"
+    child = tmp_path / "child.yaml"
+    base.write_text(
+        "\n".join(
+            [
+                "model_name: model",
+                "model_revision: revision",
+                "representation: cls",
+                "data_root: data",
+                "split: [train, eval]",
+                "batch_size: 2",
+                "num_workers: 0",
+                "device: auto",
+                "recall_k: [1, 2]",
+                "retrieval_chunk_size: 4",
+                "output_dir: outputs/cls",
+                "seed: 42",
+                "num_threads: 1",
+                "token: secret",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    child.write_text(
+        "extends: base.yaml\n"
+        "representation: mean_patch\n"
+        "output_dir: outputs/mean_patch\n",
+        encoding="utf-8",
+    )
+    config = load_config(child)
+    assert config["representation"] == "mean_patch"
+    assert config["output_dir"] == "outputs/mean_patch"
+    assert config["token"] == "secret"
+
+
+def test_config_inheritance_rejects_cycle(tmp_path):
+    first = tmp_path / "first.yaml"
+    second = tmp_path / "second.yaml"
+    first.write_text("extends: second.yaml\n", encoding="utf-8")
+    second.write_text("extends: first.yaml\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="vòng lặp"):
+        load_config(first)
