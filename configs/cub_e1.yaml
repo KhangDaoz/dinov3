@@ -1,0 +1,22 @@
+extends: cub_e2a.yaml
+experiment: e1
+representation: cls
+source_output_dir: outputs/cls
+output_dir: outputs/e1_evidential
+batch_size: 128
+evidential_head:
+  hidden_dim: 256
+  num_classes: 100
+  dropout: 0.1
+  evidence_activation: softplus
+training:
+  epochs: 30
+  validation_fraction: 0.1
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  annealing_epochs: 10
+  gradient_clip: 10.0
+calibration:
+  ece_bins: 15
+reranking:
+  top_n_grid: [8, 16, 32, 64, 128]

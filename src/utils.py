@@ -117,7 +117,52 @@ def load_config(path):
                 raise ValueError(f"training.{key} phải là số nguyên dương")
         if not 0 < training["validation_fraction"] < 1:
             raise ValueError("training.validation_fraction phải nằm trong (0, 1)")
+    if config.get("experiment") == "e1":
+        _validate_e1_config(config)
     return config
+
+
+def _validate_e1_config(config):
+    if config["representation"] != "cls":
+        raise ValueError("E1 yêu cầu representation='cls'")
+    if not isinstance(config.get("source_output_dir"), str):
+        raise ValueError("E1 yêu cầu source_output_dir")
+    head = config.get("evidential_head")
+    training = config.get("training")
+    calibration = config.get("calibration")
+    reranking = config.get("reranking")
+    required_head = {"hidden_dim", "num_classes", "dropout", "evidence_activation"}
+    required_training = {
+        "epochs", "validation_fraction", "learning_rate", "weight_decay",
+        "annealing_epochs", "gradient_clip",
+    }
+    if not isinstance(head, dict) or required_head - head.keys():
+        raise ValueError("E1 evidential_head config không đầy đủ")
+    if head["evidence_activation"] != "softplus":
+        raise ValueError("E1 hiện chỉ hỗ trợ evidence_activation='softplus'")
+    for key in ("hidden_dim", "num_classes"):
+        if not isinstance(head[key], int) or head[key] <= 0:
+            raise ValueError(f"evidential_head.{key} phải là số nguyên dương")
+    if not 0 <= head["dropout"] < 1:
+        raise ValueError("evidential_head.dropout phải nằm trong [0, 1)")
+    if not isinstance(training, dict) or required_training - training.keys():
+        raise ValueError("E1 training config không đầy đủ")
+    for key in ("epochs", "annealing_epochs"):
+        if not isinstance(training[key], int) or training[key] <= 0:
+            raise ValueError(f"training.{key} phải là số nguyên dương")
+    if not 0 < training["validation_fraction"] < 1:
+        raise ValueError("training.validation_fraction phải nằm trong (0, 1)")
+    if not isinstance(calibration, dict) or not isinstance(
+        calibration.get("ece_bins"), int
+    ) or calibration["ece_bins"] <= 0:
+        raise ValueError("E1 calibration.ece_bins phải là số nguyên dương")
+    grid = reranking.get("top_n_grid") if isinstance(reranking, dict) else None
+    if not isinstance(grid, list) or not grid:
+        raise ValueError("E1 reranking.top_n_grid phải là danh sách")
+    if any(not isinstance(value, int) or value <= 0 for value in grid):
+        raise ValueError("E1 top_n_grid chỉ nhận số nguyên dương")
+    if grid != sorted(set(grid)):
+        raise ValueError("E1 top_n_grid phải tăng dần và không trùng")
 
 
 def public_config(config):

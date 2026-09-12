@@ -86,3 +86,11 @@ def test_config_inheritance_rejects_cycle(tmp_path):
     second.write_text("extends: first.yaml\n", encoding="utf-8")
     with pytest.raises(ValueError, match="vòng lặp"):
         load_config(first)
+
+
+def test_repository_e1_config_is_valid():
+    config = load_config(Path("configs/cub_e1.yaml"))
+    assert config["experiment"] == "e1"
+    assert config["representation"] == "cls"
+    assert config["reranking"]["top_n_grid"] == [8, 16, 32, 64, 128]
+    assert config["token"] is None
