@@ -1,0 +1,223 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[a4paper,top=2.5cm,bottom=2.5cm,left=3cm,right=2.5cm]{geometry}
+\usepackage[T5]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[vietnamese]{babel}
+\usepackage{amsmath,amssymb,booktabs,array,microtype,siunitx,enumitem,caption}
+\usepackage{setspace,titlesec,fancyhdr}
+\sisetup{output-decimal-marker={,}}
+\setlist{nosep}
+\setstretch{1.18}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{6pt plus 1pt minus 1pt}
+\setlength{\abovedisplayskip}{8pt}
+\setlength{\belowdisplayskip}{8pt}
+\setlength{\textfloatsep}{14pt plus 2pt minus 2pt}
+\renewcommand{\arraystretch}{1.18}
+\captionsetup{font=small,labelfont=bf,labelsep=period,justification=centering}
+\titleformat{\section}{\large\bfseries}{\thesection.}{0.6em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection.}{0.6em}{}
+\titlespacing*{\section}{0pt}{16pt}{7pt}
+\titlespacing*{\subsection}{0pt}{11pt}{5pt}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small Báo cáo thực nghiệm E2A}
+\fancyhead[R]{\small DINOv3 trên CUB-200-2011}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0pt}
+\renewcommand{\abstractname}{Tóm tắt}
+\newcommand{\ltwo}[1]{\frac{#1}{\lVert #1\rVert_2}}
+\newcommand{\Rk}{\operatorname{R@K}}
+
+\title{\bfseries\LARGE Phân tích biểu diễn đặc trưng DINOv3\\[0.3em]
+cho truy hồi ảnh phân loại chi tiết trên CUB-200-2011}
+\author{Báo cáo thực nghiệm E2A}
+\date{\today}
+
+\begin{document}
+\maketitle
+\thispagestyle{plain}
+
+\begin{abstract}
+Báo cáo đánh giá bốn cách xây dựng embedding từ backbone DINOv3 ViT-B/16 đóng băng: CLS token, trung bình patch token, hợp nhất CLS--Mean Patch bằng phép chiếu học được, và attention pooling. Các phương pháp dùng chung tiền xử lý, cosine similarity và Recall@1/2/4/8 trên CUB-200-2011. CLS đạt Recall@1 cao nhất, ở mức \SI{88.01}{\percent}; tiếp theo là Fusion với \SI{87.05}{\percent}, Attention Pooling với \SI{84.22}{\percent} và Mean Patch với \SI{45.75}{\percent}. Kết quả cho thấy CLS đã chứa biểu diễn toàn cục mạnh. Các bộ tổng hợp học được phục hồi phần lớn thông tin bị mất khi trung bình patch, nhưng không vượt CLS. Vì vậy, CLS được chọn làm semantic embedding cơ sở cho giai đoạn mô hình hóa độ bất định tiếp theo.
+
+\noindent\textbf{Từ khóa:} DINOv3, truy hồi ảnh, CUB-200-2011, metric learning, attention pooling.
+\end{abstract}
+
+\section{Giới thiệu}
+Truy hồi ảnh phân loại chi tiết yêu cầu phân biệt các lớp có sai khác thị giác nhỏ, trong khi tư thế, nền và chất lượng ảnh có thể biến thiên đáng kể. DINOv3 cung cấp cả token toàn cục và đặc trưng patch dày đặc \cite{simeoni2025dinov3}. Tuy nhiên, cách tổng hợp các token này thành một embedding truy hồi cần được kiểm chứng thực nghiệm.
+
+E2A trả lời câu hỏi: \emph{với DINOv3 đóng băng, biểu diễn nào truy hồi tốt nhất trên các lớp chim chưa xuất hiện khi huấn luyện thành phần tổng hợp?}
+
+M1 và M2 không có tham số học; M3 và M4 chỉ học bộ tổng hợp bằng Proxy Anchor \cite{kim2020proxy}. Phạm vi này chưa đưa độ bất định vào mô hình, nhằm tách ảnh hưởng của representation trước Pair-wise Confidence Learning.
+
+\section{Công trình liên quan}
+Evidential Deep Learning mô hình hóa đầu ra phân loại bằng phân phối Dirichlet. Evidence được chuyển thành belief và uncertainty, qua đó cho phép mô hình biểu diễn mức độ tin cậy của dự đoán \cite{sensoy2018evidential}.
+
+Proxy Anchor kết hợp ưu điểm của mục tiêu dựa trên cặp và mục tiêu dựa trên proxy trong deep metric learning \cite{kim2020proxy}. Trong báo cáo này, loss Proxy Anchor chỉ được dùng để huấn luyện bộ tổng hợp của M3 và M4.
+
+IDML tách semantic embedding và uncertainty embedding, sau đó điều chỉnh phép so sánh từng cặp theo mức mơ hồ của mẫu \cite{wang2023idml}. Evidential Transformer đưa evidential classification vào bài toán truy hồi dùng transformer \cite{dordevic2024evidential}. Hai hướng này là cơ sở cho giai đoạn mô hình hóa độ bất định sau E2A; chúng chưa được đưa vào các baseline hiện tại.
+
+\section{Phương pháp}
+\subsection{Backbone và token}
+Với ảnh $x$, DINOv3 sinh tensor lớp cuối
+\begin{equation}
+H(x)=[h_{\mathrm{cls}},h_{\mathrm{reg}}^{(1)},\ldots,h_{\mathrm{reg}}^{(R)},h_1,\ldots,h_P],
+\end{equation}
+với $R=4$, $P=196$ và $d=768$. Chỉ $h_1,\ldots,h_P$ là patch token; register token bị loại khỏi mọi phép pooling không dùng CLS.
+
+\subsection{Bốn biểu diễn E2A}
+M1 dùng CLS:
+\begin{equation} z_{\mathrm{CLS}}(x)=\ltwo{h_{\mathrm{cls}}}. \end{equation}
+M2 lấy trung bình patch:
+\begin{equation}
+\bar h(x)=\frac{1}{P}\sum_{i=1}^{P}h_i,\qquad z_{\mathrm{mean}}(x)=\ltwo{\bar h(x)}.
+\end{equation}
+M3 ghép hai đặc trưng chưa chuẩn hóa riêng rồi chiếu:
+\begin{equation}
+z_{\mathrm{fusion}}(x)=\ltwo{W[h_{\mathrm{cls}};\bar h(x)]+b},
+\quad W\in\mathbb{R}^{768\times1536}.
+\end{equation}
+Bộ chiếu có \num{1180416} tham số suy luận.
+
+M4 học attention trên patch:
+\begin{align}
+e_i &= w_2^\top\tanh(W_1h_i+b_1)+b_2,\\
+a_i &= \frac{\exp(e_i)}{\sum_{j=1}^{P}\exp(e_j)},\\
+z_{\mathrm{attn}}(x) &= \ltwo{\sum_{i=1}^{P}a_i h_i}.
+\end{align}
+Scorer $768\rightarrow128\rightarrow1$ có \num{98561} tham số suy luận. Không có projection sau weighted sum và không regularize entropy.
+
+\subsection{Huấn luyện M3--M4}
+Với proxy $p$, tập dương $X_p^+$, tập âm $X_p^-$, cosine $s$, $\alpha=32$ và margin $\delta=0.1$, Proxy Anchor là
+\begin{align}
+\mathcal{L}_{+}
+&=\frac{1}{|P^+|}\sum_{p\in P^+}\log\left[1+\sum_{x\in X_p^+}\exp\{-\alpha(s(x,p)-\delta)\}\right],\\
+\mathcal{L}_{-}
+&=\frac{1}{|P|}\sum_{p\in P}\log\left[1+\sum_{x\in X_p^-}\exp\{\alpha(s(x,p)+\delta)\}\right],\\
+\mathcal{L}_{\mathrm{PA}}&=\mathcal{L}_{+}+\mathcal{L}_{-}.
+\end{align}
+AdamW dùng learning rate $10^{-4}$ cho bộ tổng hợp, $10^{-2}$ cho proxy và weight decay $10^{-4}$. Mỗi batch cân bằng gồm 16 lớp và 4 ảnh cho mỗi lớp.
+
+Tập train được chia phân tầng theo tỷ lệ 90/10. Epoch được chọn bằng Recall@1 trên tập validation. Sau khi chọn epoch, mô hình được khởi tạo lại và huấn luyện trên toàn bộ \num{5864} ảnh train. M3 chọn epoch 28 và M4 chọn epoch 26; tập test không tham gia quá trình lựa chọn.
+
+\subsection{Truy hồi và độ đo}
+Embedding được chuẩn hóa L2, do đó cosine giữa hai mẫu là $s_{ij}=z_i^\top z_j$. Mỗi ảnh test đồng thời đóng vai trò query và thuộc gallery. Ảnh query được loại khỏi kết quả của chính nó.
+
+Với $\mathcal{N}_K(q)$ là tập top-$K$ sau khi loại self-match, Recall@K được tính bởi:
+\begin{equation}
+\Rk=\frac{1}{N}\sum_{q=1}^{N}\mathbf{1}\left[\exists j\in\mathcal{N}_K(q):y_j=y_q\right].
+\end{equation}
+Tie được xử lý ổn định theo index gallery tăng dần.
+
+\section{Thiết lập thực nghiệm}
+CUB-200-2011 có 200 loài và \num{11788} ảnh \cite{wah2011cub}. Một trăm lớp đầu tạo train (\num{5864} ảnh), 100 lớp cuối tạo test (\num{5924} ảnh).
+
+\begin{table}[htbp]
+\centering
+\caption{Thiết lập chung.}
+\begin{tabular}{@{}ll@{}}
+\toprule
+Thành phần & Giá trị\\
+\midrule
+Backbone & DINOv3 ViT-B/16, frozen\\
+Ảnh/chuẩn hóa & $224\times224$; ImageNet mean/std\\
+Token layout & 1 CLS, 4 register, 196 patch\\
+Embedding & 768 chiều, float32, L2-normalized\\
+Similarity/độ đo & cosine; Recall@1/2/4/8\\
+Thiết bị & CUDA; batch size 32; seed 42\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Truy hồi được tính theo từng khối 256 mẫu. Mỗi artifact được kiểm tra tính toàn vẹn bằng mã băm SHA-256 trước khi đánh giá.
+
+\section{Kết quả}
+\begin{table}[htbp]
+\centering
+\caption{Recall trên 5.924 query/gallery test (\%). Kết quả tốt nhất in đậm.}
+\label{tab:main-results}
+\begin{tabular}{@{}lrrrrr@{}}
+\toprule
+Phương pháp & Chiều & R@1 & R@2 & R@4 & R@8\\
+\midrule
+M1: CLS & 768 & \textbf{88.01} & \textbf{92.76} & \textbf{95.24} & \textbf{97.03}\\
+M2: Mean Patch & 768 & 45.75 & 57.85 & 68.23 & 78.73\\
+M3: Fusion & 768 & 87.05 & 92.30 & 95.21 & 96.93\\
+M4: Attention Pooling & 768 & 84.22 & 90.34 & 94.09 & 96.42\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Chênh lệch điểm phần trăm so với CLS.}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Phương pháp & $\Delta$R@1 & $\Delta$R@2 & $\Delta$R@4 & $\Delta$R@8\\
+\midrule
+Mean Patch & -42.27 & -34.91 & -27.01 & -18.30\\
+Fusion & -0.96 & -0.46 & -0.03 & -0.10\\
+Attention Pooling & -3.80 & -2.41 & -1.15 & -0.61\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Phân tích}
+CLS dẫn đầu ở mọi mức $K$. Khoảng cách nhỏ giữa CLS và Fusion tại R@4--R@8 cho thấy phép chiếu giữ được phần lớn cấu trúc lân cận của CLS. Tuy nhiên, Fusion không cải thiện kết quả ở nhóm đầu. Thông tin bổ sung từ Mean Patch chưa đủ bù cho sai số tổng quát hóa của phép chiếu học trên các lớp train.
+
+Mean Patch kém CLS 42,27 điểm phần trăm tại R@1. Phép trung bình đồng đều gán mức quan trọng như nhau cho mọi vùng ảnh. Vì vậy, nền và các patch ít mang đặc trưng loài có thể làm loãng tín hiệu phân biệt.
+
+Attention cải thiện 38,47 điểm phần trăm so với Mean Patch tại R@1. Kết quả này xác nhận rằng lựa chọn patch theo nội dung hiệu quả hơn trung bình đồng đều. Dù vậy, Attention vẫn thấp hơn CLS 3,80 điểm phần trăm. CLS pretrained vì thế tổng hợp ngữ nghĩa toàn cục tốt hơn scorer nhỏ chỉ được học từ CUB train.
+
+M4 chọn epoch 26 với validation R@1 là \SI{74.15}{\percent}; loss train giảm từ 8,892 xuống 3,869. Trên test, entropy attention trung bình đạt 1,887, trọng số cực đại trung bình đạt 0,387 và số patch hiệu dụng trung bình là 7,875 trên tổng số 196 patch. Các thống kê này cho thấy scorer tập trung vào một nhóm nhỏ vùng ảnh. Tuy nhiên, chưa thể kết luận các vùng đó tương ứng với bộ phận chim có ý nghĩa nếu chưa có trực quan hóa hoặc annotation bộ phận.
+
+\section{Tính toàn vẹn và khả năng tái lập}
+Cả bốn artifact train/test có kích thước $(5864,768)$ và $(5924,768)$. Các tensor dùng kiểu số thực 32 bit, không chứa giá trị NaN hoặc vô hạn, và có sai số chuẩn hóa lớn nhất so với norm đơn vị là $1.79\times10^{-7}$.
+
+Mỗi tập dữ liệu có đúng 100 lớp; nhãn và thứ tự mẫu được kiểm tra đồng bộ. Quá trình trích xuất và đánh giá sử dụng CUDA. Thời gian tính cosine và Recall dưới 0,22 giây cho mỗi phương pháp.
+
+\section{Giới hạn}
+Thực nghiệm chỉ sử dụng một seed, một dataset và một backbone. Vì vậy, kết quả chưa đủ để suy luận ý nghĩa thống kê. M1 và M2 không học tham số, trong khi M3 và M4 có bước lựa chọn mô hình; chi phí của các phương pháp không hoàn toàn tương đương dù cùng dùng một giao thức test.
+
+Tài liệu CUB cảnh báo rằng một số ảnh có thể trùng với dữ liệu ImageNet hoặc Flickr từng được dùng trong pretraining \cite{wah2011cub}. Mức độ giao nhau với LVD-1689M chưa được đo, do đó chưa thể loại trừ hoàn toàn ảnh hưởng này.
+
+Cần chạy nhiều seed cho M3/M4, báo cáo trung bình và độ lệch chuẩn, kiểm tra calibration/uncertainty trên ảnh khó, và ablation tách ảnh hưởng của loss, projection và attention. Các thí nghiệm đó phải báo cáo riêng.
+
+\section{Kết luận}
+Trong thiết lập DINOv3 ViT-B/16 đóng băng, CLS là biểu diễn tốt nhất và đơn giản nhất. Phương pháp đạt R@1 bằng \SI{88.01}{\percent}, không cần huấn luyện thành phần bổ sung và vượt cả Fusion lẫn Attention.
+
+Mean Patch không phù hợp làm biểu diễn chính. Attention cho thấy patch token vẫn chứa tín hiệu phân biệt, nhưng chưa vượt CLS. Do đó, giai đoạn Pair-wise Confidence Learning nên dùng CLS làm semantic embedding cơ sở; các biểu diễn học được được giữ lại cho nghiên cứu ablation.
+
+\begin{thebibliography}{9}
+\bibitem{simeoni2025dinov3}
+O. Siméoni, H. V. Vo, M. Seitzer, và cộng sự,
+DINOv3, arXiv:2508.10104, 2025.
+
+\bibitem{wah2011cub}
+C. Wah, S. Branson, P. Welinder, P. Perona, và S. Belongie,
+The Caltech-UCSD Birds-200-2011 Dataset,
+California Institute of Technology, CNS-TR-2011-001, 2011.
+
+\bibitem{sensoy2018evidential}
+M. Sensoy, L. Kaplan, và M. Kandemir,
+Evidential Deep Learning to Quantify Classification Uncertainty,
+Advances in Neural Information Processing Systems, vol. 31, 2018.
+
+\bibitem{kim2020proxy}
+S. Kim, D. Kim, M. Cho, và S. Kwak,
+Proxy Anchor Loss for Deep Metric Learning,
+IEEE/CVF Conference on Computer Vision and Pattern Recognition, tr. 3238--3247, 2020.
+
+\bibitem{wang2023idml}
+C. Wang, W. Zheng, Z. Zhu, J. Zhou, và J. Lu,
+Introspective Deep Metric Learning,
+IEEE Transactions on Pattern Analysis and Machine Intelligence, 2023.
+
+\bibitem{dordevic2024evidential}
+D. Dordevic và S. Kumar,
+Evidential Transformers for Improved Image Retrieval,
+3rd Workshop on Uncertainty Quantification for Computer Vision, ECCV, 2024.
+\end{thebibliography}
+\end{document}
