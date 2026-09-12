@@ -1,0 +1,22 @@
+extends: cub_e2a.yaml
+representation: attention_pool
+output_dir: outputs/attention_pool
+attention_hidden_dim: 128
+patch_cache:
+  dtype: float32
+  shard_size: 128
+  max_cached_shards: 4
+  prefetch_factor: 2
+training:
+  loss: proxy_anchor
+  epochs: 30
+  classes_per_batch: 16
+  samples_per_class: 4
+  validation_fraction: 0.1
+  alpha: 32.0
+  margin: 0.1
+  attention_lr: 0.0001
+  proxy_lr: 0.01
+  weight_decay: 0.0001
+  scheduler_step: 10
+  scheduler_gamma: 0.5

@@ -90,3 +90,56 @@ class FusionProjection(nn.Module):
         if torch.any(torch.linalg.vector_norm(projected, dim=1) == 0).item():
             raise ValueError("Fusion projection tạo vector zero")
         return F.normalize(projected, p=2, dim=1)
+
+
+def raw_patch_tokens(last_hidden_state, num_register_tokens):
+    """Return unnormalized spatial patch tokens as CPU float32."""
+    if last_hidden_state.ndim != 3:
+        raise ValueError(
+            "last_hidden_state phải có shape [batch, tokens, hidden_size]"
+        )
+    if not isinstance(num_register_tokens, int) or num_register_tokens < 0:
+        raise ValueError("num_register_tokens phải là số nguyên không âm")
+    patch_start = 1 + num_register_tokens
+    if patch_start >= last_hidden_state.shape[1]:
+        raise ValueError("Không còn patch token cho attention pooling")
+    patches = last_hidden_state[:, patch_start:, :].to(dtype=torch.float32)
+    if not torch.isfinite(patches).all().item():
+        raise ValueError("Patch tokens chứa NaN/Inf")
+    return patches.cpu()
+
+
+class AttentionPool(nn.Module):
+    """Additive attention over spatial patch tokens."""
+
+    def __init__(self, feature_dim=768, hidden_dim=128):
+        super().__init__()
+        self.feature_dim = feature_dim
+        self.hidden_dim = hidden_dim
+        self.scorer = nn.Sequential(
+            nn.Linear(feature_dim, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, 1),
+        )
+        for module in self.scorer:
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                nn.init.zeros_(module.bias)
+
+    def forward(self, patch_tokens, return_weights=False):
+        if patch_tokens.ndim != 3 or patch_tokens.shape[1] < 1:
+            raise ValueError("Patch tokens phải có shape [batch, patches, hidden]")
+        if patch_tokens.shape[2] != self.feature_dim:
+            raise ValueError(f"Patch hidden size phải là {self.feature_dim}")
+        patches = patch_tokens.to(dtype=torch.float32)
+        if not torch.isfinite(patches).all().item():
+            raise ValueError("Patch tokens chứa NaN/Inf")
+        logits = self.scorer(patches).squeeze(-1)
+        weights = torch.softmax(logits, dim=1)
+        pooled = torch.sum(patches * weights.unsqueeze(-1), dim=1)
+        if torch.any(torch.linalg.vector_norm(pooled, dim=1) == 0).item():
+            raise ValueError("Attention pooling tạo vector zero")
+        embeddings = F.normalize(pooled, p=2, dim=1)
+        if return_weights:
+            return embeddings, weights
+        return embeddings

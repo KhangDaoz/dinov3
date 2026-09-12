@@ -54,7 +54,7 @@ def load_config(path):
     missing = sorted(REQUIRED_CONFIG_KEYS - config.keys())
     if missing:
         raise ValueError(f"Config thiếu khóa: {', '.join(missing)}")
-    supported_representations = {"cls", "mean_patch", "fusion"}
+    supported_representations = {"cls", "mean_patch", "fusion", "attention_pool"}
     if config["representation"] not in supported_representations:
         supported = ", ".join(sorted(supported_representations))
         raise ValueError(f"representation phải là một trong: {supported}")
@@ -68,15 +68,41 @@ def load_config(path):
     recall_k = config["recall_k"]
     if not recall_k or any(not isinstance(k, int) or k <= 0 for k in recall_k):
         raise ValueError("recall_k phải là danh sách số nguyên dương")
-    if config["representation"] == "fusion":
-        if not isinstance(config.get("projection_dim"), int) or config["projection_dim"] <= 0:
-            raise ValueError("fusion yêu cầu projection_dim là số nguyên dương")
+    if config["representation"] in {"fusion", "attention_pool"}:
+        representation = config["representation"]
+        if representation == "attention_pool":
+            hidden_dim = config.get("attention_hidden_dim")
+            if not isinstance(hidden_dim, int) or hidden_dim <= 0:
+                raise ValueError("attention_pool yêu cầu attention_hidden_dim dương")
+            patch_cache = config.get("patch_cache")
+            required_cache = {
+                "dtype", "shard_size", "max_cached_shards", "prefetch_factor"
+            }
+            if not isinstance(patch_cache, dict):
+                raise ValueError("attention_pool yêu cầu patch_cache config")
+            missing_cache = sorted(required_cache - patch_cache.keys())
+            if missing_cache:
+                raise ValueError(
+                    f"patch_cache thiếu khóa: {', '.join(missing_cache)}"
+                )
+            if patch_cache["dtype"] != "float32":
+                raise ValueError("M4 canonical yêu cầu patch_cache.dtype='float32'")
+            for key in ("shard_size", "max_cached_shards", "prefetch_factor"):
+                if not isinstance(patch_cache[key], int) or patch_cache[key] <= 0:
+                    raise ValueError(f"patch_cache.{key} phải là số nguyên dương")
+        else:
+            if not isinstance(config.get("projection_dim"), int) or config["projection_dim"] <= 0:
+                raise ValueError("fusion yêu cầu projection_dim là số nguyên dương")
         training = config.get("training")
         required_training = {
             "loss", "epochs", "classes_per_batch", "samples_per_class",
-            "validation_fraction", "alpha", "margin", "projection_lr",
+            "validation_fraction", "alpha", "margin",
             "proxy_lr", "weight_decay", "scheduler_step", "scheduler_gamma",
         }
+        learning_rate_key = (
+            "projection_lr" if representation == "fusion" else "attention_lr"
+        )
+        required_training.add(learning_rate_key)
         if not isinstance(training, dict):
             raise ValueError("fusion yêu cầu training config")
         missing_training = sorted(required_training - training.keys())
@@ -85,7 +111,7 @@ def load_config(path):
                 f"training config thiếu khóa: {', '.join(missing_training)}"
             )
         if training["loss"] != "proxy_anchor":
-            raise ValueError("E2A-M3 chỉ hỗ trợ loss='proxy_anchor'")
+            raise ValueError("Learned E2A representations yêu cầu proxy_anchor")
         for key in ("epochs", "classes_per_batch", "samples_per_class", "scheduler_step"):
             if not isinstance(training[key], int) or training[key] <= 0:
                 raise ValueError(f"training.{key} phải là số nguyên dương")

@@ -96,9 +96,9 @@ def output_paths(output_dir):
 
 def run_extraction(config_path, overwrite=False):
     config = load_config(config_path)
-    if config["representation"] == "fusion":
+    if config["representation"] in {"fusion", "attention_pool"}:
         raise ValueError(
-            "Fusion cần checkpoint đã train; dùng scripts/train_projection.py"
+            "Learned representation cần chạy training script trước"
         )
     paths = output_paths(config["output_dir"])
     existing = [path for path in paths.values() if path.exists()]

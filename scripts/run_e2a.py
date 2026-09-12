@@ -16,16 +16,16 @@ if str(SRC_DIR) not in sys.path:
 from utils import load_config
 
 
-def load_fusion_runner():
-    script_path = PROJECT_ROOT / "scripts" / "train_projection.py"
+def load_learned_runner(script_name, function_name):
+    script_path = PROJECT_ROOT / "scripts" / script_name
     spec = importlib.util.spec_from_file_location(
-        "e2a_train_projection_script", script_path
+        f"e2a_{script_path.stem}_script", script_path
     )
     if spec is None or spec.loader is None:
         raise ImportError(f"Không load được training script: {script_path}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.run_fusion_training
+    return getattr(module, function_name)
 
 
 def main():
@@ -37,7 +37,13 @@ def main():
     args = parser.parse_args()
     config = load_config(args.config)
     if config["representation"] == "fusion":
-        load_fusion_runner()(args.config, overwrite=args.overwrite)
+        load_learned_runner(
+            "train_projection.py", "run_fusion_training"
+        )(args.config, overwrite=args.overwrite)
+    elif config["representation"] == "attention_pool":
+        load_learned_runner(
+            "train_attention_pool.py", "run_attention_training"
+        )(args.config, overwrite=args.overwrite)
     else:
         run_extraction(args.config, overwrite=args.overwrite)
     recalls = run_evaluation(args.config)

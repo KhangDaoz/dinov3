@@ -26,6 +26,8 @@ Place tests in `tests/`, mirror source names, and name cases `test_<behavior>`. 
 
 Use the resolved `device` throughout model inference, tensor operations, and retrieval. With `device: auto`, prefer CUDA whenever available and fall back to CPU only when no GPU exists. Do not hard-code CPU for compute paths; CPU is appropriate for persisted embeddings, portable cache loading, and deterministic unit tests.
 
+Training must place the model, loss parameters, batches, and compute-heavy metrics on CUDA whenever available. Keep image decoding and dataset indexing in CPU DataLoader workers; never create CUDA tensors inside workers. Feed CUDA with `pin_memory=True`, `non_blocking=True` transfers, `persistent_workers=True` for multi-epoch loaders, and a configured `prefetch_factor` when `num_workers > 0`. Move results back to CPU only for durable artifacts or CPU-only operations.
+
 ## Method Lineage & References
 
 Consult the specified paper before inheriting a method:
