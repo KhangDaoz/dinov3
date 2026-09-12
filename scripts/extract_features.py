@@ -96,6 +96,10 @@ def output_paths(output_dir):
 
 def run_extraction(config_path, overwrite=False):
     config = load_config(config_path)
+    if config["representation"] == "fusion":
+        raise ValueError(
+            "Fusion cần checkpoint đã train; dùng scripts/train_projection.py"
+        )
     paths = output_paths(config["output_dir"])
     existing = [path for path in paths.values() if path.exists()]
     if existing and not overwrite:

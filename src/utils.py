@@ -54,7 +54,7 @@ def load_config(path):
     missing = sorted(REQUIRED_CONFIG_KEYS - config.keys())
     if missing:
         raise ValueError(f"Config thiếu khóa: {', '.join(missing)}")
-    supported_representations = {"cls", "mean_patch"}
+    supported_representations = {"cls", "mean_patch", "fusion"}
     if config["representation"] not in supported_representations:
         supported = ", ".join(sorted(supported_representations))
         raise ValueError(f"representation phải là một trong: {supported}")
@@ -68,6 +68,29 @@ def load_config(path):
     recall_k = config["recall_k"]
     if not recall_k or any(not isinstance(k, int) or k <= 0 for k in recall_k):
         raise ValueError("recall_k phải là danh sách số nguyên dương")
+    if config["representation"] == "fusion":
+        if not isinstance(config.get("projection_dim"), int) or config["projection_dim"] <= 0:
+            raise ValueError("fusion yêu cầu projection_dim là số nguyên dương")
+        training = config.get("training")
+        required_training = {
+            "loss", "epochs", "classes_per_batch", "samples_per_class",
+            "validation_fraction", "alpha", "margin", "projection_lr",
+            "proxy_lr", "weight_decay", "scheduler_step", "scheduler_gamma",
+        }
+        if not isinstance(training, dict):
+            raise ValueError("fusion yêu cầu training config")
+        missing_training = sorted(required_training - training.keys())
+        if missing_training:
+            raise ValueError(
+                f"training config thiếu khóa: {', '.join(missing_training)}"
+            )
+        if training["loss"] != "proxy_anchor":
+            raise ValueError("E2A-M3 chỉ hỗ trợ loss='proxy_anchor'")
+        for key in ("epochs", "classes_per_batch", "samples_per_class", "scheduler_step"):
+            if not isinstance(training[key], int) or training[key] <= 0:
+                raise ValueError(f"training.{key} phải là số nguyên dương")
+        if not 0 < training["validation_fraction"] < 1:
+            raise ValueError("training.validation_fraction phải nằm trong (0, 1)")
     return config
 
 

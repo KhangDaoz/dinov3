@@ -1,0 +1,17 @@
+extends: cub_e2a.yaml
+representation: fusion
+output_dir: outputs/fusion
+projection_dim: 768
+training:
+  loss: proxy_anchor
+  epochs: 30
+  classes_per_batch: 16
+  samples_per_class: 4
+  validation_fraction: 0.1
+  alpha: 32.0
+  margin: 0.1
+  projection_lr: 0.0001
+  proxy_lr: 0.01
+  weight_decay: 0.0001
+  scheduler_step: 10
+  scheduler_gamma: 0.5
