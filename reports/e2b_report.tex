@@ -1,0 +1,260 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[a4paper,top=2.5cm,bottom=2.5cm,left=3cm,right=2.5cm]{geometry}
+\usepackage[T5]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[vietnamese]{babel}
+\usepackage{amsmath,amssymb,booktabs,array,microtype,siunitx,enumitem,caption}
+\usepackage{setspace,titlesec,fancyhdr}
+\sisetup{output-decimal-marker={,}}
+\setlist{nosep}
+\setstretch{1.18}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{6pt plus 1pt minus 1pt}
+\setlength{\abovedisplayskip}{8pt}
+\setlength{\belowdisplayskip}{8pt}
+\setlength{\textfloatsep}{14pt plus 2pt minus 2pt}
+\renewcommand{\arraystretch}{1.18}
+\captionsetup{font=small,labelfont=bf,labelsep=period,justification=centering}
+\titleformat{\section}{\large\bfseries}{\thesection.}{0.6em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection.}{0.6em}{}
+\titlespacing*{\section}{0pt}{16pt}{7pt}
+\titlespacing*{\subsection}{0pt}{11pt}{5pt}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small Báo cáo thực nghiệm E2B}
+\fancyhead[R]{\small Pair-wise Confidence Learning}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0pt}
+\renewcommand{\abstractname}{Tóm tắt}
+\newcommand{\Rk}{\operatorname{R@K}}
+
+\title{\bfseries\LARGE Học độ tin cậy theo cặp cho truy hồi ảnh\\[0.3em]
+dựa trên biểu diễn DINOv3}
+\author{Báo cáo thực nghiệm E2B}
+\date{\today}
+
+\begin{document}
+\maketitle
+\thispagestyle{plain}
+
+\begin{abstract}
+Báo cáo đánh giá Pair-wise Confidence Learning cho truy hồi ảnh phân loại chi tiết trên CUB-200-2011. Trên CLS embedding của DINOv3 ViT-B/16 đóng băng, một mạng MLP học xác suất hai ảnh cùng lớp từ đặc trưng có thứ tự và sai khác tuyệt đối. Confidence được kết hợp với cosine trong một candidate pool chọn trên validation. Pair classifier đạt AUROC 0,9709 trên validation; cấu hình được chọn dùng 32 ứng viên và trọng số cosine $\lambda=0,9$. Tuy nhiên, trên 5.924 ảnh test thuộc các lớp chưa thấy, phương pháp kết hợp đạt Recall@1 là \SI{86.58}{\percent}, thấp hơn CLS cosine \SI{88.01}{\percent}. Pair Confidence đơn lẻ đạt \SI{80.89}{\percent}, còn image-level uncertainty đạt \SI{83.10}{\percent}. Kết quả cho thấy tín hiệu theo cặp hữu ích hơn uncertainty mức ảnh, nhưng chưa tổng quát hóa đủ tốt để cải thiện baseline DINOv3 mạnh.
+
+\noindent\textbf{Từ khóa:} DINOv3, truy hồi ảnh, pair-wise confidence, metric learning, uncertainty.
+\end{abstract}
+
+\section{Giới thiệu}
+Độ bất định của một ảnh không nhất thiết phản ánh độ đúng của một phép ghép trong truy hồi. Một ảnh khó nhận dạng vẫn có thể có hàng xóm đúng lớp; ngược lại, hai ảnh rõ ràng có thể bị ghép sai do khác tư thế hoặc nền. Thực nghiệm E1 xác nhận hạn chế này: uncertainty mức ảnh chỉ đạt AUROC 0,5176 khi phát hiện truy hồi top-1 sai và làm Recall@1 giảm 4,91 điểm phần trăm.
+
+E2B chuyển đơn vị dự đoán từ từng ảnh sang từng cặp query--candidate. Mục tiêu là học trực tiếp xác suất hai embedding biểu diễn cùng một lớp, sau đó kết hợp xác suất này với cosine similarity. Thiết kế giữ DINOv3 đóng băng để đo riêng đóng góp của confidence network.
+
+\section{Công trình liên quan}
+Proxy Anchor xây dựng metric learning quanh quan hệ giữa mẫu và proxy lớp, đồng thời thiết lập giao thức truy hồi CUB theo split lớp rời nhau \cite{kim2020proxy}. E2B giữ giao thức đánh giá nhưng không sử dụng Proxy Anchor loss.
+
+IDML biểu diễn mỗi ảnh bằng semantic embedding và uncertainty embedding. Introspective Similarity Metric điều chỉnh độ khác biệt ngữ nghĩa theo mức mơ hồ của cặp \cite{wang2023idml}. E2B kế thừa động cơ xem độ tin cậy là thuộc tính của quan hệ, nhưng thay uncertainty embedding bằng binary pair classifier.
+
+Evidential Deep Learning mô hình hóa uncertainty mức ảnh bằng Dirichlet evidence \cite{sensoy2018evidential}. Evidential Transformers áp dụng uncertainty vào truy hồi và tái xếp hạng \cite{dordevic2024evidential}. Các phương pháp này tạo đối chứng E1; chúng không được dùng để huấn luyện E2B.
+
+\section{Phương pháp}
+\subsection{Biểu diễn ngữ nghĩa}
+Với ảnh $x$, backbone DINOv3 sinh CLS token $h_{\mathrm{cls}}(x)$. Embedding được chuẩn hóa:
+
+\begin{equation}
+z(x)=\frac{h_{\mathrm{cls}}(x)}
+{\lVert h_{\mathrm{cls}}(x)\rVert_2},
+\qquad z(x)\in\mathbb{R}^{768}.
+\end{equation}
+
+Backbone và embedding được giữ cố định trong toàn bộ E2B. Cosine similarity giữa query $q$ và candidate $g$ là $s_{\cos}(q,g)=z_q^\top z_g$.
+
+\subsection{Biểu diễn cặp}
+Đặc trưng đầu vào ghép hai embedding và sai khác tuyệt đối:
+
+\begin{equation}
+\phi(q,g)=[z_q;z_g;|z_q-z_g|]\in\mathbb{R}^{2304}.
+\end{equation}
+
+MLP lần lượt ánh xạ $2304\rightarrow512\rightarrow128\rightarrow1$, dùng Layer Normalization, GELU và dropout 0,1. Mạng có \num{1250561} tham số. Vì hai thành phần đầu phụ thuộc thứ tự, confidence được lấy trung bình hai chiều:
+
+\begin{equation}
+c(q,g)=\frac{1}{2}\left[
+\sigma(f_\theta(\phi(q,g)))+
+\sigma(f_\theta(\phi(g,q)))
+\right].
+\end{equation}
+
+Cách định nghĩa này bảo đảm $c(q,g)=c(g,q)$ khi suy luận.
+
+\subsection{Xây dựng cặp huấn luyện}
+Mỗi ảnh train làm anchor và tạo hai positive cùng lớp cùng hai negative khác lớp. Positive gồm một mẫu ngẫu nhiên và một hard positive có cosine thấp. Negative gồm một mẫu ngẫu nhiên và một hard negative lấy từ 32 ảnh khác lớp gần anchor nhất theo cosine.
+
+Mỗi cặp được đưa vào theo cả hai thứ tự. Nhãn $y=1$ cho cặp cùng lớp và $y=0$ cho cặp khác lớp. Mục tiêu huấn luyện là binary cross entropy với logits:
+
+\begin{equation}
+\mathcal{L}_{\mathrm{pair}}
+=-\frac{1}{B}\sum_{i=1}^{B}
+\left[y_i\log\sigma(\ell_i)
++(1-y_i)\log(1-\sigma(\ell_i))\right].
+\end{equation}
+
+Hard-negative bank chỉ được xây trong split đang huấn luyện. Vì vậy, ảnh validation và test không tham gia khai phá negative của train.
+
+\subsection{Tái xếp hạng}
+Cosine được đưa về miền $[0,1]$:
+
+\begin{equation}
+\widetilde{s}_{\cos}(q,g)=\frac{s_{\cos}(q,g)+1}{2}.
+\end{equation}
+
+Điểm cuối kết hợp cosine và Pair Confidence:
+
+\begin{equation}
+s_{\mathrm{final}}(q,g)
+=\lambda\widetilde{s}_{\cos}(q,g)
++(1-\lambda)c(q,g).
+\end{equation}
+
+Chỉ top-$M$ ứng viên cosine được chấm confidence và sắp lại. Phần gallery còn lại giữ thứ tự ban đầu. Validation khảo sát $M\in\{32,64,128\}$ và $\lambda\in\{0;0,25;0,5;0,75;0,9;1\}$.
+
+\section{Thiết lập thực nghiệm}
+CUB-200-2011 gồm 200 lớp và 11.788 ảnh \cite{wah2011cub}. Một trăm lớp đầu, gồm 5.864 ảnh, được dùng cho huấn luyện; 100 lớp cuối, gồm 5.924 ảnh, được dùng cho test. Mỗi ảnh test vừa là query vừa thuộc gallery; self-match bị loại.
+
+Train được chia phân tầng 90/10 để lựa chọn mô hình. MLP dùng AdamW, learning rate $10^{-3}$, weight decay $10^{-4}$, gradient clipping 10 và tối đa 30 epoch. Mỗi batch bắt đầu từ 64 anchor. Epoch được chọn bằng pair AUROC trên validation; mô hình cuối được khởi tạo lại và huấn luyện 18 epoch trên toàn bộ train.
+
+\begin{table}[htbp]
+\centering
+\caption{Thiết lập E2B canonical.}
+\begin{tabular}{@{}ll@{}}
+\toprule
+Thành phần & Giá trị\\
+\midrule
+Backbone & DINOv3 ViT-B/16, đóng băng\\
+Embedding & CLS, 768 chiều, L2-normalized\\
+Pair feature & $[z_q;z_g;|z_q-z_g|]$\\
+MLP & $2304\rightarrow512\rightarrow128\rightarrow1$\\
+Pair sampling & 2 positive + 2 negative mỗi anchor\\
+Hard-negative bank & 32 candidate mỗi anchor\\
+Candidate pool được chọn & $M=32$\\
+Trọng số được chọn & $\lambda=0,9$\\
+Đánh giá & Recall@1/2/4/8, cosine, seed 42\\
+Thiết bị & CUDA\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Kết quả}
+\subsection{Chất lượng Pair Confidence trên validation}
+
+\begin{table}[htbp]
+\centering
+\caption{Chỉ số phân loại cặp trên validation.}
+\begin{tabular}{@{}rrrrr@{}}
+\toprule
+Accuracy & AUROC & AUPRC & BCE & ECE\\
+\midrule
+89,31 & 97,09 & 97,11 & 0,3583 & 0,0554\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Pair classifier phân tách tốt positive và negative trong các lớp train. Train BCE giảm từ 0,4499 xuống 0,0830 tại epoch 18; pair AUROC validation đạt 0,9709. Kết quả này xác nhận mạng đã học được quan hệ cặp trên miền huấn luyện, nhưng chưa trực tiếp chứng minh khả năng tổng quát hóa sang lớp mới.
+
+\subsection{Lựa chọn tham số trên validation}
+Với $M=32$, Recall@1 tăng từ \SI{77.89}{\percent} tại $\lambda=1$ lên \SI{82.65}{\percent} tại $\lambda=0,9$. Cùng giá trị $\lambda=0,9$, ba candidate depth cho kết quả bằng nhau tại các Recall được xét; quy tắc tie-break chọn $M=32$ để giảm chi phí. Pair Confidence đơn lẻ, tương ứng $\lambda=0$, chỉ đạt Recall@1 \SI{79.42}{\percent}.
+
+\subsection{Kết quả trên test}
+
+\begin{table}[htbp]
+\centering
+\caption{Recall trên 5.924 query/gallery test (\%). Kết quả tốt nhất in đậm.}
+\label{tab:e2b-results}
+\begin{tabular}{@{}llrrrr@{}}
+\toprule
+Mã & Phương pháp & R@1 & R@2 & R@4 & R@8\\
+\midrule
+B0 & CLS cosine & \textbf{88,01} & \textbf{92,76} & \textbf{95,24} & \textbf{97,03}\\
+B1 & Image uncertainty & 83,10 & 90,53 & 94,70 & 97,03\\
+B2 & Pair Confidence & 80,89 & 88,67 & 93,96 & 96,61\\
+B3 & Cosine + Pair Confidence & 86,58 & 91,98 & 95,05 & 96,93\\
+B4 & Cosine control & \textbf{88,01} & \textbf{92,76} & \textbf{95,24} & \textbf{97,03}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Chênh lệch điểm phần trăm so với CLS cosine.}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Phương pháp & $\Delta$R@1 & $\Delta$R@2 & $\Delta$R@4 & $\Delta$R@8\\
+\midrule
+Image uncertainty & -4,91 & -2,23 & -0,54 & 0,00\\
+Pair Confidence & -7,12 & -4,09 & -1,28 & -0,42\\
+Cosine + Pair Confidence & -1,43 & -0,78 & -0,19 & -0,10\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Phân tích}
+\subsection{Pair Confidence không thay thế được cosine}
+B2 thấp hơn B0 7,12 điểm phần trăm tại Recall@1. Binary classifier được tối ưu để phân biệt các cặp sampled trên lớp train, không để bảo toàn toàn bộ thứ tự lân cận trên lớp mới. Khi confidence trở thành tín hiệu duy nhất, sai số tổng quát hóa được khuếch đại trong candidate pool.
+
+\subsection{Phép kết hợp giảm thiệt hại nhưng chưa cải thiện baseline}
+B3 cao hơn B1 3,48 điểm và cao hơn B2 5,69 điểm tại Recall@1. Điều này cho thấy confidence theo cặp hữu ích hơn uncertainty mức ảnh khi được cosine giới hạn. Tuy nhiên, B3 vẫn thấp hơn B0 1,43 điểm. Trọng số $\lambda=0,9$ cũng cho thấy validation ưu tiên giữ phần lớn tín hiệu cosine.
+
+Phân tích top-1 ghi nhận 114 query được sửa từ sai thành đúng, nhưng 199 query chuyển từ đúng thành sai. Chênh lệch ròng 85 query tương ứng trực tiếp với mức giảm Recall@1. Pair Confidence vì vậy có tín hiệu bổ sung, song quyết định tái xếp hạng chưa đủ ổn định.
+
+\subsection{Khoảng cách giữa validation và test}
+Trên validation, cấu hình B3 vượt cosine 4,76 điểm phần trăm tại Recall@1. Trên test, cùng cấu hình lại thấp hơn 1,43 điểm. Khoảng đảo chiều này là dấu hiệu domain shift theo lớp: validation dùng các lớp đã tham gia học pair network, còn test gồm 100 lớp hoàn toàn mới.
+
+Pair AUROC cao không mâu thuẫn với Recall thấp hơn. AUROC đo khả năng phân tách trên tập cặp được lấy mẫu; Recall phụ thuộc thứ tự tương đối của các hard candidate cho từng query. Hai mục tiêu liên quan nhưng không tương đương.
+
+\section{Tính toàn vẹn và khả năng tái lập}
+Tất cả chín artifact E2B đều có checksum SHA-256 khớp manifest. Pair validation gồm 2.352 cặp gốc và 4.704 logits sau khi thêm hai hướng. Candidate index, cosine, confidence và final score trên test đều hữu hạn. B0 và B4 trùng nhau tại mọi Recall, xác nhận $\lambda=1$ tái tạo đúng CLS baseline.
+
+Toàn bộ quá trình E2B chạy trên CUDA. Huấn luyện, lựa chọn và xuất artifact mất 192,17 giây; đánh giá test mất 3,15 giây. Candidate scoring được chia khối, không vật liệu hóa tensor pair feature có kích thước $N_q\times N_g\times2304$.
+
+\section{Giới hạn}
+Thực nghiệm chỉ sử dụng một seed, một backbone và một dataset. Chưa có độ lệch chuẩn hoặc kiểm định ý nghĩa thống kê. Các ablation về negative sampling, loại pair feature và confidence một chiều chưa được chạy; do đó báo cáo không suy luận đóng góp riêng của các lựa chọn này.
+
+Pair validation được tạo từ các lớp train nên chưa đại diện đầy đủ cho khả năng chuyển sang lớp mới. Chọn epoch theo pair AUROC cũng chưa đồng nhất trực tiếp với mục tiêu Recall. Các nghiên cứu tiếp theo cần đánh giá nhiều seed, class-held-out validation, calibration sau chuyển miền và loss xếp hạng theo cặp.
+
+\section{Kết luận}
+E2B học được pair classifier mạnh trên validation, nhưng Pair Confidence chưa vượt CLS cosine trên các lớp test chưa thấy. Phép kết hợp với $\lambda=0,9$ đạt Recall@1 \SI{86.58}{\percent}; thấp hơn baseline \SI{88.01}{\percent}, dù tốt hơn rõ rệt so với image-level uncertainty reranking.
+
+Kết quả không ủng hộ việc thay thế cosine bằng confidence. Hướng phù hợp hơn là dùng Pair Confidence như tín hiệu phụ được hiệu chỉnh chặt, đồng thời cải thiện validation theo lớp và mục tiêu huấn luyện gần với ranking. CLS cosine tiếp tục là phương pháp chính trong thiết lập hiện tại.
+
+\begin{thebibliography}{9}
+\bibitem{simeoni2025dinov3}
+O. Siméoni, H. V. Vo, M. Seitzer, và cộng sự,
+DINOv3, arXiv:2508.10104, 2025.
+
+\bibitem{wah2011cub}
+C. Wah, S. Branson, P. Welinder, P. Perona, và S. Belongie,
+The Caltech-UCSD Birds-200-2011 Dataset,
+California Institute of Technology, CNS-TR-2011-001, 2011.
+
+\bibitem{sensoy2018evidential}
+M. Sensoy, L. Kaplan, và M. Kandemir,
+Evidential Deep Learning to Quantify Classification Uncertainty,
+Advances in Neural Information Processing Systems, tập 31, 2018.
+
+\bibitem{kim2020proxy}
+S. Kim, D. Kim, M. Cho, và S. Kwak,
+Proxy Anchor Loss for Deep Metric Learning,
+IEEE/CVF Conference on Computer Vision and Pattern Recognition,
+tr. 3238--3247, 2020.
+
+\bibitem{wang2023idml}
+C. Wang, W. Zheng, Z. Zhu, J. Zhou, và J. Lu,
+Introspective Deep Metric Learning,
+IEEE Transactions on Pattern Analysis and Machine Intelligence, 2023.
+
+\bibitem{dordevic2024evidential}
+D. Dordevic và S. Kumar,
+Evidential Transformers for Improved Image Retrieval,
+3rd Workshop on Uncertainty Quantification for Computer Vision, ECCV, 2024.
+\end{thebibliography}
+
+\end{document}
