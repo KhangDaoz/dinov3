@@ -1,5 +1,5 @@
-# Python 3.11; versions verified in the existing Conda e2a environment.
-# Existing PyTorch build is CUDA 13.0; CPU inference was verified on this machine.
+# Python 3.14; versions verified in the repository's existing .venv environment.
+# Existing PyTorch build is CUDA 13.0; imports and CPU inference were verified on this machine.
 --extra-index-url https://download.pytorch.org/whl/cu130
 torch==2.14.0+cu130
 torchvision==0.29.0+cu130
@@ -11,3 +11,4 @@ tqdm==4.70.0
 huggingface_hub==1.30.0
 safetensors==0.8.0
 tokenizers==0.23.2
+pytest==9.0.2

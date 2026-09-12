@@ -1,13 +1,8 @@
-import argparse
-import json
 import os
-from pathlib import Path
 
 import torch
 import torchvision
 import PIL.Image
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 class BaseDataset(torch.utils.data.Dataset):
     def __init__(self, root, mode, transform = None):
@@ -68,3 +63,12 @@ class CUBirds(BaseDataset):
                 self.I += [index]
                 self.im_paths.append(i[0])
                 index += 1
+
+        if not self.im_paths:
+            raise RuntimeError(f"Không tìm thấy ảnh cho split {mode!r} trong {self.root}")
+
+
+def collate_pil_batch(batch):
+    """Keep PIL images unstacked so the checkpoint processor can batch them."""
+    images, labels = zip(*batch, strict=True)
+    return list(images), torch.tensor(labels, dtype=torch.long)

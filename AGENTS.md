@@ -22,6 +22,10 @@ Follow PEP 8 with four-space indentation. Use `snake_case` for functions, module
 
 Place tests in `tests/`, mirror source names, and name cases `test_<behavior>`. Use `pytest`; cover split boundaries, invalid modes, corrupt images, embedding shapes, L2 normalization, and self-match exclusion. Keep tests deterministic with seed `42` and mock model downloads.
 
+## Device Policy
+
+Use the resolved `device` throughout model inference, tensor operations, and retrieval. With `device: auto`, prefer CUDA whenever available and fall back to CPU only when no GPU exists. Do not hard-code CPU for compute paths; CPU is appropriate for persisted embeddings, portable cache loading, and deterministic unit tests.
+
 ## Method Lineage & References
 
 Consult the specified paper before inheriting a method:

@@ -38,6 +38,17 @@ def load_dinov3(device=None, config_path=CONFIG_PATH):
     return model.to(device), processor, device
 
 
+def extract_last_hidden_state(model, processor, images, device):
+    """Process a PIL image batch and return final-layer DINOv3 tokens."""
+    inputs = processor(images=images, return_tensors="pt").to(device)
+    with torch.inference_mode():
+        outputs = model(**inputs)
+    tokens = outputs.last_hidden_state
+    if tokens.ndim != 3 or not torch.isfinite(tokens).all().item():
+        raise RuntimeError(f"Output tokens không hợp lệ: shape={tuple(tokens.shape)}")
+    return tokens, inputs
+
+
 def main():
     parser = argparse.ArgumentParser(description="Kiểm tra DINOv3 với một ảnh CUB.")
     parser.add_argument("--root", default=str(PROJECT_ROOT / "data"),
