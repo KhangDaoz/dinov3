@@ -94,3 +94,10 @@ def test_repository_e1_config_is_valid():
     assert config["representation"] == "cls"
     assert config["reranking"]["top_n_grid"] == [8, 16, 32, 64, 128]
     assert config["token"] is None
+
+
+def test_repository_e2b_config_is_valid():
+    config = load_config(Path("configs/cub_e2b.yaml"))
+    assert config["experiment"] == "e2b"
+    assert config["pair_network"]["feature_mode"] == "full"
+    assert config["retrieval"]["candidate_top_n_grid"] == [32, 64, 128]

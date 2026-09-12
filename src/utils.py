@@ -119,6 +119,8 @@ def load_config(path):
             raise ValueError("training.validation_fraction phải nằm trong (0, 1)")
     if config.get("experiment") == "e1":
         _validate_e1_config(config)
+    if config.get("experiment") == "e2b":
+        _validate_e2b_config(config)
     return config
 
 
@@ -163,6 +165,50 @@ def _validate_e1_config(config):
         raise ValueError("E1 top_n_grid chỉ nhận số nguyên dương")
     if grid != sorted(set(grid)):
         raise ValueError("E1 top_n_grid phải tăng dần và không trùng")
+
+
+def _validate_e2b_config(config):
+    if config["representation"] != "cls":
+        raise ValueError("E2B yêu cầu representation='cls'")
+    for key in ("source_output_dir", "e1_output_dir"):
+        if not isinstance(config.get(key), str):
+            raise ValueError(f"E2B yêu cầu {key}")
+    network = config.get("pair_network")
+    sampling = config.get("pair_sampling")
+    training = config.get("training")
+    retrieval = config.get("retrieval")
+    if not isinstance(network, dict):
+        raise ValueError("E2B yêu cầu pair_network")
+    if network.get("feature_mode") not in {"full", "ordered", "difference"}:
+        raise ValueError("pair_network.feature_mode không hợp lệ")
+    hidden = network.get("hidden_dims")
+    if not isinstance(hidden, list) or len(hidden) != 2 or min(hidden) <= 0:
+        raise ValueError("pair_network.hidden_dims phải có hai số dương")
+    if not 0 <= network.get("dropout", -1) < 1:
+        raise ValueError("pair_network.dropout không hợp lệ")
+    required_sampling = {
+        "positive_per_anchor", "negative_per_anchor", "negative_bank_size"
+    }
+    if not isinstance(sampling, dict) or required_sampling - sampling.keys():
+        raise ValueError("E2B pair_sampling không đầy đủ")
+    if sampling["positive_per_anchor"] != 2 or sampling["negative_per_anchor"] != 2:
+        raise ValueError("Canonical E2B yêu cầu 2 positive và 2 negative")
+    required_training = {
+        "epochs", "validation_fraction", "anchors_per_batch", "learning_rate",
+        "weight_decay", "gradient_clip",
+    }
+    if not isinstance(training, dict) or required_training - training.keys():
+        raise ValueError("E2B training không đầy đủ")
+    if not 0 < training["validation_fraction"] < 1:
+        raise ValueError("E2B validation_fraction không hợp lệ")
+    if not isinstance(retrieval, dict):
+        raise ValueError("E2B yêu cầu retrieval config")
+    candidates = retrieval.get("candidate_top_n_grid")
+    weights = retrieval.get("lambda_grid")
+    if not candidates or candidates != sorted(set(candidates)):
+        raise ValueError("candidate_top_n_grid không hợp lệ")
+    if not weights or any(not 0 <= value <= 1 for value in weights):
+        raise ValueError("lambda_grid không hợp lệ")
 
 
 def public_config(config):

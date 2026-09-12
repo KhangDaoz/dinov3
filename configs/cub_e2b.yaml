@@ -1,0 +1,30 @@
+extends: cub_e2a.yaml
+experiment: e2b
+representation: cls
+source_output_dir: outputs/cls
+e1_output_dir: outputs/e1_evidential
+output_dir: outputs/e2b_pair_confidence
+batch_size: 128
+pair_network:
+  hidden_dims: [512, 128]
+  dropout: 0.1
+  feature_mode: full
+  symmetric: true
+pair_sampling:
+  positive_per_anchor: 2
+  negative_per_anchor: 2
+  hard_negative_fraction: 0.5
+  negative_bank_size: 32
+training:
+  epochs: 30
+  validation_fraction: 0.1
+  anchors_per_batch: 64
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  gradient_clip: 10.0
+pair_metrics:
+  ece_bins: 15
+retrieval:
+  candidate_top_n_grid: [32, 64, 128]
+  lambda_grid: [0.0, 0.25, 0.5, 0.75, 0.9, 1.0]
+  pair_chunk_size: 4096

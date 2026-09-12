@@ -83,6 +83,57 @@ def cosine_top_indices(embeddings, top_n, chunk_size, device=None):
     return torch.cat(batches)
 
 
+def cosine_top_candidates(embeddings, top_n, chunk_size, device=None):
+    """Return stable cosine neighbor indices and their scores."""
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(device)
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("Retrieval yêu cầu CUDA nhưng CUDA không khả dụng")
+    if embeddings.ndim != 2 or not 0 < top_n < len(embeddings):
+        raise ValueError("top_n không hợp lệ")
+    vectors = embeddings.detach().to(device=device, dtype=torch.float32)
+    norms = torch.linalg.vector_norm(vectors, dim=1)
+    if not torch.allclose(norms, torch.ones_like(norms), atol=1e-4, rtol=1e-4):
+        raise ValueError("embeddings phải được chuẩn hóa L2")
+    all_indices, all_scores = [], []
+    for start in range(0, len(vectors), chunk_size):
+        stop = min(start + chunk_size, len(vectors))
+        similarities = vectors[start:stop] @ vectors.T
+        rows = torch.arange(stop - start, device=device)
+        similarities[rows, torch.arange(start, stop, device=device)] = -torch.inf
+        order = torch.argsort(
+            similarities, dim=1, descending=True, stable=True
+        )[:, :top_n]
+        all_indices.append(order.cpu())
+        all_scores.append(torch.gather(similarities, 1, order).cpu())
+    return torch.cat(all_indices), torch.cat(all_scores)
+
+
+def fuse_candidate_rankings(
+    indices, cosine_scores, confidence_scores, weight, candidate_top_n
+):
+    """Rerank a cosine prefix with fused scores and preserve its suffix."""
+    indices = torch.as_tensor(indices, dtype=torch.long).cpu()
+    cosine_scores = torch.as_tensor(cosine_scores, dtype=torch.float32).cpu()
+    confidence_scores = torch.as_tensor(confidence_scores, dtype=torch.float32).cpu()
+    if not (indices.shape == cosine_scores.shape == confidence_scores.shape):
+        raise ValueError("Candidate indices/scores phải cùng shape")
+    if not 0 < candidate_top_n <= indices.shape[1]:
+        raise ValueError("candidate_top_n không hợp lệ")
+    if not 0 <= weight <= 1:
+        raise ValueError("lambda phải nằm trong [0, 1]")
+    fused = weight * ((cosine_scores + 1) / 2) + (1 - weight) * confidence_scores
+    result = indices.clone()
+    prefix = result[:, :candidate_top_n]
+    order = torch.argsort(
+        fused[:, :candidate_top_n], dim=1, descending=True, stable=True
+    )
+    result[:, :candidate_top_n] = torch.gather(prefix, 1, order)
+    return result, torch.gather(fused[:, :candidate_top_n], 1, order)
+
+
 def rerank_top_n_by_uncertainty(indices, gallery_uncertainty, top_n):
     """Stable-sort the selected cosine prefix by ascending gallery uncertainty."""
     indices = torch.as_tensor(indices, dtype=torch.long).cpu()

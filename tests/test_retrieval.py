@@ -3,6 +3,8 @@ import torch
 import torch.nn.functional as F
 
 from src.retrieval import (
+    cosine_top_candidates,
+    fuse_candidate_rankings,
     cosine_top_indices,
     recall_at_k,
     recall_from_indices,
@@ -70,3 +72,26 @@ def test_uncertainty_reranking_changes_only_requested_prefix_stably():
     uncertainty = torch.tensor([0.9, 0.2, 0.2, 0.5])
     reranked = rerank_top_n_by_uncertainty(indices, uncertainty, top_n=3)
     assert reranked.tolist() == [[2, 1, 3, 0]]
+
+
+def test_fused_reranking_preserves_suffix_and_cosine_control():
+    indices = torch.tensor([[1, 2, 3]])
+    cosine = torch.tensor([[0.9, 0.8, 0.7]])
+    confidence = torch.tensor([[0.1, 0.9, 1.0]])
+    reranked, _ = fuse_candidate_rankings(
+        indices, cosine, confidence, weight=0, candidate_top_n=2
+    )
+    assert reranked.tolist() == [[2, 1, 3]]
+    control, _ = fuse_candidate_rankings(
+        indices, cosine, confidence, weight=1, candidate_top_n=3
+    )
+    assert torch.equal(control, indices)
+
+
+def test_cosine_candidates_return_matching_scores():
+    embeddings, _ = sample_embeddings()
+    indices, scores = cosine_top_candidates(
+        embeddings, top_n=2, chunk_size=2, device="cpu"
+    )
+    expected = torch.gather(embeddings @ embeddings.T, 1, indices)
+    assert torch.allclose(scores, expected)
