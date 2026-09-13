@@ -15,7 +15,7 @@ Loss: Binary Cross Entropy.
 6. Retrieval inference
 Final score = lambda * Cosine Similarity + (1-lambda) * Pair Confidence. Khảo sát các giá trị lambda khác nhau.
 7. So sánh thực nghiệm
-So sánh: DINOv3 baseline, Evidential embedding, Image uncertainty reranking, Pair-wise Confidence, Fusion Cosine + Confidence.
+So sánh: DINOv3 baseline, Evidential embedding (sử dụng α-embeddings như bài báo 2409.01082v2), Image uncertainty reranking, Pair-wise Confidence, Fusion Cosine + Confidence.
 8. Ablation study
 Đánh giá ảnh hưởng của cosine similarity, pair confidence và hệ số lambda.
 9. Kết quả cần lưu
