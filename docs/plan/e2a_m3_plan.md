@@ -95,8 +95,10 @@ averaged.
 - projection/proxy learning rate: `1e-4`;
 - weight decay: `1e-4` for projection weights, zero for bias and proxies;
 - scheduler: cosine decay to zero, stepped once per optimizer update;
-- AMP: projection may use AMP, but normalization, cosine logits, log-sum-exp,
-  and loss accumulation must use FP32;
+- precision: use FP32 for projection and Proxy Anchor training. Initial T4
+  execution showed non-finite FP16 backward gradients from the combination of
+  Proxy Anchor scale and AMP loss scaling; this stability correction does not
+  change the architecture, data, loss equation, or selection rule;
 - gradient clipping: global norm 5.0;
 - checkpoint evaluation: after every epoch;
 - deterministic seed: 42 for initialization, sampling, and all training RNGs.

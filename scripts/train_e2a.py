@@ -130,10 +130,6 @@ def main() -> None:
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=training.epochs * len(loader)
     )
-    scaler = torch.amp.GradScaler(
-        device.type,
-        enabled=config.runtime.amp and device.type == "cuda",
-    )
     root = Path(config.output.root)
     provenance = {
         "config_sha256": sha256_file(args.config),
@@ -160,21 +156,16 @@ def main() -> None:
             patch = patch.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
             optimizer.zero_grad(set_to_none=True)
-            with torch.autocast(
-                device_type=device.type,
-                enabled=config.runtime.amp and device.type == "cuda",
-                dtype=torch.float16,
-            ):
-                loss = ddp(cls, patch, labels)
-            scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
+            # Proxy Anchor's scaled logits and AMP loss scaling can overflow
+            # the FP16 projection backward on T4. M3 is intentionally FP32.
+            loss = ddp(cls.float(), patch.float(), labels)
+            loss.backward()
             gradient_norm = torch.nn.utils.clip_grad_norm_(
                 model.parameters(), training.gradient_clip_norm
             )
             if not torch.isfinite(gradient_norm):
                 raise FloatingPointError("M3 gradients are not finite")
-            scaler.step(optimizer)
-            scaler.update()
+            optimizer.step()
             scheduler.step()
             loss_sum += float(loss.detach())
         distributed_barrier(device)

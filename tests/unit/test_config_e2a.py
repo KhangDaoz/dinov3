@@ -43,6 +43,7 @@ def test_m3_config_locks_training_recipe() -> None:
     assert config.training is not None
     assert config.training.seed == 42
     assert config.training.classes_per_batch * config.training.images_per_class == 80
+    assert config.runtime.amp is False
 
 
 def test_m3_rejects_training_recipe_drift() -> None:

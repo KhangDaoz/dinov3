@@ -25,7 +25,7 @@ runtime:
   batch_size: 40
   num_workers: 4
   prefetch_factor: 2
-  amp: true
+  amp: false
   world_size: 2
   similarity_chunk_size: 1024
 

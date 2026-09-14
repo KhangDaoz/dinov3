@@ -239,6 +239,11 @@ def validate_e2a_config(config: E2AConfig) -> None:
         )
         if any(value is None for value in required_inputs):
             raise ValueError("M3 requires both accepted M1/M2 caches and manifests")
+        if config.runtime.amp:
+            raise ValueError(
+                "M3 requires FP32 training because Proxy Anchor AMP gradients "
+                "overflow on T4"
+            )
 
 
 def load_e2a_config(path: str | Path) -> E2AConfig:
