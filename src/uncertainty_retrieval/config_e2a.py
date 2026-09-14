@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, fields, is_dataclass
 from pathlib import Path
-from typing import Any, TypeVar, get_type_hints
+from typing import Any, TypeVar, get_args, get_type_hints
 
 import yaml
 
@@ -39,6 +39,20 @@ class RepresentationConfig:
 
 
 @dataclass(frozen=True)
+class E2ATrainingConfig:
+    seed: int = 42
+    epochs: int = 30
+    classes_per_batch: int = 20
+    images_per_class: int = 4
+    learning_rate: float = 1.0e-4
+    weight_decay: float = 1.0e-4
+    proxy_weight_decay: float = 0.0
+    proxy_alpha: float = 32.0
+    proxy_margin: float = 0.1
+    gradient_clip_norm: float = 5.0
+
+
+@dataclass(frozen=True)
 class E2ARuntimeConfig:
     batch_size: int = 128
     num_workers: int = 4
@@ -69,6 +83,10 @@ class E2ACacheConfig:
     schema_version: int = 2
     materialize_embeddings: bool = False
     reference_manifest: str | None = None
+    cls_path: str | None = None
+    mean_patch_path: str | None = None
+    cls_manifest: str | None = None
+    mean_patch_manifest: str | None = None
 
 
 @dataclass(frozen=True)
@@ -86,6 +104,7 @@ class E2AConfig:
     evaluation: E2AEvaluationConfig = E2AEvaluationConfig()
     cache: E2ACacheConfig = E2ACacheConfig()
     output: E2AOutputConfig = E2AOutputConfig()
+    training: E2ATrainingConfig | None = None
 
 
 T = TypeVar("T")
@@ -106,10 +125,19 @@ def _construct(cls: type[T], values: dict[str, Any], path: str) -> T:
             continue
         value = values[field.name]
         field_type = hints[field.name]
+        union_dataclass = next(
+            (item for item in get_args(field_type) if is_dataclass(item)), None
+        )
         if is_dataclass(field_type):
             if not isinstance(value, dict):
                 raise TypeError(f"{path}.{field.name} must be a mapping")
             value = _construct(field_type, value, f"{path}.{field.name}")
+        elif union_dataclass is not None and value is not None:
+            if not isinstance(value, dict):
+                raise TypeError(f"{path}.{field.name} must be a mapping")
+            value = _construct(
+                union_dataclass, value, f"{path}.{field.name}"
+            )
         elif getattr(field_type, "__origin__", None) is tuple:
             if not isinstance(value, (list, tuple)):
                 raise TypeError(f"{path}.{field.name} must be a sequence")
@@ -144,6 +172,13 @@ def validate_e2a_config(config: E2AConfig) -> None:
     contracts = {
         "m1": ("m1", "cls", "final", "none", "l2"),
         "m2": ("m2", "mean_patch", "final", "mean", "l2"),
+        "m3": (
+            "m3",
+            "cls_mean_projection",
+            "final",
+            "projection",
+            "l2",
+        ),
     }
     actual = (
         representation.method,
@@ -187,6 +222,23 @@ def validate_e2a_config(config: E2AConfig) -> None:
             raise ValueError("M2 cannot reuse CLS cache candidates")
         if not config.cache.reference_manifest:
             raise ValueError("M2 requires the accepted M1 embedding manifest")
+    if representation.method in {"m1", "m2"} and config.training is not None:
+        raise ValueError(f"{representation.method.upper()} is not trainable")
+    if representation.method == "m3":
+        training = config.training
+        if training is None:
+            raise ValueError("M3 requires a training section")
+        expected_training = E2ATrainingConfig()
+        if training != expected_training:
+            raise ValueError("M3 training recipe differs from the locked plan")
+        required_inputs = (
+            config.cache.cls_path,
+            config.cache.mean_patch_path,
+            config.cache.cls_manifest,
+            config.cache.mean_patch_manifest,
+        )
+        if any(value is None for value in required_inputs):
+            raise ValueError("M3 requires both accepted M1/M2 caches and manifests")
 
 
 def load_e2a_config(path: str | Path) -> E2AConfig:

@@ -37,6 +37,31 @@ def main() -> None:
         config.dataset.development_classes,
         config.dataset.total_classes,
     )
+    if config.representation.method == "m3":
+        if args.stage == "validation":
+            subprocess.run(
+                [
+                    "torchrun",
+                    "--standalone",
+                    f"--nproc-per-node={config.runtime.world_size}",
+                    "scripts/train_e2a.py",
+                    "--config",
+                    str(args.config),
+                ],
+                check=True,
+            )
+        subprocess.run(
+            [
+                sys.executable,
+                "scripts/evaluate_e2a.py",
+                "--config",
+                str(args.config),
+                "--stage",
+                args.stage,
+            ],
+            check=True,
+        )
+        return
     cache_path, diagnostics = find_reusable_feature_cache(config, records)
     if cache_path is None:
         print(

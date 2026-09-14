@@ -51,3 +51,27 @@ class MeanPatchRepresentation(nn.Module):
         if not torch.isfinite(patches).all():
             raise ValueError("Patch features contain NaN or Inf")
         return patches.float().mean(dim=1)
+
+
+class CLSMeanPatchProjection(nn.Module):
+    """M3 affine projection over ordered CLS and mean-patch inputs."""
+
+    def __init__(self, embedding_dim: int = 768) -> None:
+        super().__init__()
+        if embedding_dim <= 0:
+            raise ValueError("embedding_dim must be positive")
+        self.embedding_dim = embedding_dim
+        self.projection = nn.Linear(2 * embedding_dim, embedding_dim)
+        nn.init.xavier_uniform_(self.projection.weight)
+        nn.init.zeros_(self.projection.bias)
+
+    def forward(self, cls: Tensor, mean_patch: Tensor) -> Tensor:
+        expected = (self.embedding_dim,)
+        if cls.ndim != 2 or tuple(cls.shape[1:]) != expected:
+            raise ValueError("CLS input has an invalid shape")
+        if mean_patch.shape != cls.shape:
+            raise ValueError("CLS and mean-patch inputs must have equal shapes")
+        if not torch.isfinite(cls).all() or not torch.isfinite(mean_patch).all():
+            raise ValueError("M3 inputs contain NaN or Inf")
+        fused = torch.cat((cls.float(), mean_patch.float()), dim=1)
+        return self.projection(fused)

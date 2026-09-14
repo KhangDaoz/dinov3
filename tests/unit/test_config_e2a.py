@@ -37,6 +37,24 @@ def test_m2_rejects_cls_cache_reuse() -> None:
         validate_e2a_config(invalid)
 
 
+def test_m3_config_locks_training_recipe() -> None:
+    config = load_e2a_config(CONFIG.with_name("cub_e2a_m3.yaml"))
+    assert config.representation.method == "m3"
+    assert config.training is not None
+    assert config.training.seed == 42
+    assert config.training.classes_per_batch * config.training.images_per_class == 80
+
+
+def test_m3_rejects_training_recipe_drift() -> None:
+    config = load_e2a_config(CONFIG.with_name("cub_e2a_m3.yaml"))
+    invalid = replace(
+        config,
+        training=replace(config.training, proxy_margin=0.2),
+    )
+    with pytest.raises(ValueError, match="locked plan"):
+        validate_e2a_config(invalid)
+
+
 def test_m1_rejects_patch_pooling() -> None:
     config = load_e2a_config(CONFIG)
     invalid = replace(
