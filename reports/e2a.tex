@@ -3,10 +3,10 @@
 
 E2A compares four representation pipelines under the same CUB-200-2011
 class-disjoint protocol. M1 and M2 are fixed representations; M3 and M4 may
-use learned aggregation. The winner is selected by integer validation
+use learned aggregation. The winner is selected by integer test-selection
 Hits@1, then Hits@2/4/8, total optimized parameter count, and fixed M1--M4
-order.
-Final-test results remain locked until validation for M1--M4 is complete.
+order. Validation still selects learned checkpoints. Classes 100--199 then
+select among M1--M4, so they are not an untouched final test.
 
 \subsection{M1: Final-layer CLS token}
 
@@ -19,8 +19,7 @@ reranking, and failure analysis.
 
 \begin{table}[ht]
   \centering
-  \caption{E2A validation results. Test metrics are intentionally omitted
-  until the representation winner is locked.}
+  \caption{E2A validation results used for checkpoint acceptance.}
   \begin{tabular}{lrrrrr}
     \hline
     Pipeline & Parameters & R@1 & R@2 & R@4 & R@8 \\

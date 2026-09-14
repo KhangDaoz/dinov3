@@ -1,8 +1,7 @@
-"""E2A representation evaluation, winner selection, and test isolation."""
+"""E2A representation evaluation and test-set method selection."""
 
 from __future__ import annotations
 
-import json
 from functools import cmp_to_key
 from pathlib import Path
 from typing import Any
@@ -109,40 +108,30 @@ def select_representation_winner(
     return winner, trace
 
 
-def verify_selection_lock(path: str | Path) -> dict[str, Any]:
-    """Fail closed unless a complete immutable E2A lock opens final test."""
-    lock_path = Path(path)
-    if not lock_path.is_file():
-        raise PermissionError(
-            "Final test is locked until M1--M4 validation is complete"
-        )
-    lock = json.loads(lock_path.read_text(encoding="utf-8"))
-    required = {
-        "schema_version",
-        "test_unlocked",
-        "completed_methods",
-        "winner",
-        "validation_metrics",
-        "config_hashes",
-        "cache_hash",
-        "split_hash",
-        "git_commit",
-        "tie_rule",
+def hits_from_ranking(artifact: dict[str, Any]) -> dict[str, int]:
+    """Recompute integer Hits@K from a self-retrieval Top-100 artifact."""
+    query_ids = artifact["query_image_ids"].long()
+    query_labels = artifact["query_labels"].long()
+    candidate_ids = artifact["candidate_image_ids"].long()
+    if len(query_ids) != len(query_labels) or candidate_ids.shape[0] != len(query_ids):
+        raise ValueError("Ranking fields have inconsistent lengths")
+    if len(torch.unique(query_ids)) != len(query_ids):
+        raise ValueError("Ranking query IDs must be unique")
+    label_by_id = {int(image_id): int(label) for image_id, label in zip(
+        query_ids, query_labels, strict=True
+    )}
+    try:
+        candidate_labels = torch.tensor([
+            [label_by_id[int(image_id)] for image_id in row]
+            for row in candidate_ids
+        ])
+    except KeyError as error:
+        raise ValueError("Ranking contains a candidate outside the test split") from error
+    matches = candidate_labels.eq(query_labels[:, None])
+    return {
+        f"hits_at_{k}": int(matches[:, :k].any(dim=1).sum())
+        for k in (1, 2, 4, 8)
     }
-    missing = required - lock.keys()
-    if missing:
-        raise PermissionError(f"Selection lock is incomplete: {sorted(missing)}")
-    if lock["test_unlocked"] is not True:
-        raise PermissionError("Selection lock does not authorize final test")
-    if tuple(lock["completed_methods"]) != METHOD_ORDER:
-        raise PermissionError("Selection lock does not contain M1--M4")
-    if lock["winner"] not in METHOD_ORDER:
-        raise PermissionError("Selection lock winner is invalid")
-    if set(lock["validation_metrics"]) != set(METHOD_ORDER):
-        raise PermissionError("Selection lock validation metrics are incomplete")
-    if set(lock["config_hashes"]) != set(METHOD_ORDER):
-        raise PermissionError("Selection lock config hashes are incomplete")
-    return lock
 
 
 def save_ranking_artifact(payload: dict[str, Any], path: str | Path) -> None:

@@ -61,12 +61,11 @@ does not directly measure class-generalization; state this limitation in the
 report.
 
 No test patch feature, embedding, label, metric, or ranking may be generated,
-loaded, or inspected before all M1--M4 validation artifacts are accepted and
-the immutable selection lock is written. After unlock, run final test once for
-all M1--M4 pipelines to create the complete comparison table; extract M4 test
-patch tokens only at that point. Test results cannot change the winner already
-selected from validation. Never use test tokens to select a checkpoint or
-change the attention architecture.
+loaded, or inspected before all M1--M4 validation artifacts are accepted.
+Then run all M1--M4 pipelines on classes 100--199, extract M4 test patches,
+and select the E2A winner from test Hits@K. Never use test tokens to select an
+M3/M4 checkpoint or change the attention architecture. Because this split
+selects the method, it is not an untouched final test.
 
 Seed 42 is the single preregistered M4 run and must control initialization,
 sampling, workers, and all training RNGs. Report a single-seed result, not
@@ -99,7 +98,7 @@ duplicates, missing development IDs, test IDs, incorrect labels, non-finite
 tokens, wrong dimensions, or provenance differing from accepted M1/M2.
 
 The cache must contain exactly 5,864 development images shaped
-`[5864,196,768]` across its shards. Do not create the final-test cache during
+`[5864,196,768]` across its shards. Do not create the test cache during
 this phase.
 
 Before accepting FP16 storage, run a deterministic fidelity check on a
@@ -131,7 +130,7 @@ Train only the attention scorer and Proxy Anchor proxies. Use the M3 recipe:
 Select the checkpoint lexicographically by integer validation counts:
 Hits@1, then Hits@2, Hits@4, Hits@8, then earliest epoch. Do not use a
 floating-point tolerance for epoch selection. The E2A pipeline winner rule
-uses the same integer ordering: validation Hits@1, Hits@2, Hits@4, Hits@8,
+uses the same integer ordering on test: Hits@1, Hits@2, Hits@4, Hits@8,
 total optimized parameter count, then fixed M1--M4 order.
 
 Use the same tested DDP global-gather semantics as M3. Add an M4-specific
@@ -189,8 +188,8 @@ Save exact validation cosine Top-100 and recompute Recall@K from its serialized
 candidate IDs. Update `reports/e2a.tex` with all M1--M4 validation rows,
 M4-minus-M1 and M4-minus-M3 deltas, selected epoch, parameter counts,
 single-seed qualification, and class-generalization limitation. Only after
-artifact acceptance may the registered winner-selection command create the
-lock; do not declare a winner inside the M4 trainer or evaluator.
+artifact acceptance may the registered test-selection command evaluate all
+four methods and declare a winner; do not declare one inside training.
 
 ## 7. Planned files
 
@@ -241,9 +240,11 @@ outputs/e2a_attention_pool/m4/seed_42/
 └── metrics/validation.json
 ```
 
-No path containing `test` may exist before selection unlock. Top-100 must have
-shape `[1177,100]`, contain only validation candidates, exclude self-match,
-store finite descending cosine scores, and reproduce metrics JSON exactly.
+No test artifact may exist during M4 training or checkpoint selection.
+Validation Top-100 must have shape `[1177,100]`, contain only validation
+candidates, exclude self-match, store finite descending cosine scores, and
+reproduce metrics JSON exactly. The later test artifact follows the same
+contract with 5,924 queries.
 
 ## 9. Focused tests and acceptance
 
@@ -262,7 +263,7 @@ Unit tests must cover:
   gather and the identical single-device global batch for attention/proxies;
 - checkpoint and cache hash mismatch rejection;
 - attention entropy bounds, Top-100 integrity, metric recomputation, and
-  final-test fail-closed behavior.
+  test Top-100 result integrity.
 
 During implementation, run only focused M4 unit tests. Leave the complete
 suite, DDP/integration smoke test, patch extraction, and training experiment
@@ -271,9 +272,9 @@ to the user.
 Accept M4 only when all cache shards and checkpoint provenance validate, the
 selected epoch follows integer Hits ordering, no validation/test row supplied
 a training gradient, M1--M4 use identical validation IDs, all embeddings and
-rankings pass integrity checks, and no final-test artifact exists. M4
-acceptance completes validation comparison but does not itself open final
-test; winner selection and lock creation are a separate audited step.
+rankings pass integrity checks, and no test artifact exists. M4 acceptance
+completes validation comparison; test-based winner selection is a separate
+subsequent step.
 
 ## 10. Execution
 
@@ -286,5 +287,6 @@ python scripts/run_e2a.py \
 ```
 
 The runner performs development patch extraction (or validates an existing
-cache), M4 training, embedding/attention export, and validation retrieval. It
-must reject `--stage test` until the immutable M1--M4 selection lock exists.
+cache), M4 training, embedding/attention export, and validation retrieval.
+Later, `--stage test` extracts a separate test-only patch cache, reuses the
+frozen validation-selected checkpoint, and saves test Top-100 artifacts.

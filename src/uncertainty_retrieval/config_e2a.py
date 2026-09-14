@@ -100,6 +100,8 @@ class E2ACacheConfig:
 @dataclass(frozen=True)
 class E2AOutputConfig:
     root: str = "outputs/e2a_cls/m1"
+    # Retained for compatibility with hashes of accepted M3/M4 checkpoints.
+    # Test execution no longer depends on this legacy lock path.
     selection_lock: str = "outputs/e2a_selection/selection_lock.json"
 
 

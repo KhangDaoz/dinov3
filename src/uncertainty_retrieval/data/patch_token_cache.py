@@ -1,4 +1,4 @@
-"""Sharded development-only patch-token cache for E2A-M4."""
+"""Sharded patch-token caches for E2A-M4."""
 
 from __future__ import annotations
 
@@ -70,7 +70,10 @@ class PatchTokenCache:
 def load_patch_token_cache(
     config: E2AConfig,
     records: list[CUBRecord],
+    scope: str = "validation",
 ) -> PatchTokenCache:
+    if scope not in {"validation", "test"}:
+        raise ValueError(f"Unsupported patch-cache scope: {scope}")
     manifest_path = Path(config.cache.patch_manifest)
     if not manifest_path.is_file():
         raise FileNotFoundError(f"Missing M4 patch manifest: {manifest_path}")
@@ -86,12 +89,13 @@ def load_patch_token_cache(
     )
     if any(metadata.get(key) != reference_metadata.get(key) for key in shared):
         raise ValueError("M4 patch-cache provenance differs from accepted M2")
+    expected_split = "development" if scope == "validation" else "test"
     expected_metadata = {
         "token": "patch",
         "source_layer": "final",
         "patch_tokens": config.model.expected_patch_tokens,
         "embedding_dim": config.model.embedding_dim,
-        "scope": "development_only",
+        "scope": f"{expected_split}_only",
     }
     if any(metadata.get(key) != value for key, value in expected_metadata.items()):
         raise ValueError("M4 patch-cache representation metadata differs")
@@ -129,14 +133,14 @@ def load_patch_token_cache(
             payload["image_ids"], payload["labels"], payload["splits"], strict=True
         )):
             image_id = int(image_id)
-            if image_id in locations or split != "development":
-                raise ValueError("Duplicate or non-development M4 patch row")
+            if image_id in locations or split != expected_split:
+                raise ValueError(f"Duplicate or non-{expected_split} M4 patch row")
             locations[image_id] = (shard_index, row)
             labels[image_id] = int(label)
         shards.append(payload)
     expected = {
         record.image_id: record.original_label
-        for record in records if record.split == "development"
+        for record in records if record.split == expected_split
     }
     if labels != expected:
         raise ValueError("M4 patch-cache IDs or labels differ from CUB development")

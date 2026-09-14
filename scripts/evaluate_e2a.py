@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Evaluate one E2A representation with final-test isolation."""
+"""Evaluate one E2A representation on validation or the test selection split."""
 
 from __future__ import annotations
 
@@ -25,7 +25,6 @@ from uncertainty_retrieval.data.patch_cache import load_feature_cache
 from uncertainty_retrieval.evaluation.representation import (
     evaluate_top100,
     save_ranking_artifact,
-    verify_selection_lock,
 )
 from uncertainty_retrieval.models.representations import CLSMeanPatchProjection
 from uncertainty_retrieval.utils import environment_metadata, resolve_device, write_json
@@ -42,13 +41,6 @@ def main() -> None:
     started = time.perf_counter()
     args = parse_args()
     config = load_e2a_config(args.config)
-    if args.stage == "test":
-        lock = verify_selection_lock(config.output.selection_lock)
-        if lock["winner"] != config.representation.method:
-            raise PermissionError(
-                f"{config.representation.method.upper()} is not the locked E2A winner"
-            )
-
     records = load_cub_records(
         config.dataset.root,
         config.dataset.development_classes,

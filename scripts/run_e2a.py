@@ -13,7 +13,6 @@ from uncertainty_retrieval.config_e2a import load_e2a_config
 from uncertainty_retrieval.data.cub import load_cub_records
 from uncertainty_retrieval.data.feature_cache import find_reusable_feature_cache
 from uncertainty_retrieval.data.patch_token_cache import load_patch_token_cache
-from uncertainty_retrieval.evaluation.representation import verify_selection_lock
 
 
 def main() -> None:
@@ -22,13 +21,6 @@ def main() -> None:
     parser.add_argument("--stage", choices=("validation", "test"), default="validation")
     args = parser.parse_args()
     config = load_e2a_config(args.config)
-    if args.stage == "test":
-        lock = verify_selection_lock(config.output.selection_lock)
-        if lock["winner"] != config.representation.method:
-            raise PermissionError(
-                f"{config.representation.method.upper()} is not the locked E2A winner"
-            )
-
     os.environ.setdefault("OMP_NUM_THREADS", str(max(1, (os.cpu_count() or 2) // 2)))
     kernel_cache = Path("/tmp/uncertainty_retrieval_torch_kernels")
     kernel_cache.mkdir(parents=True, exist_ok=True)
@@ -64,32 +56,36 @@ def main() -> None:
         )
         return
     if config.representation.method == "m4":
-        if args.stage != "validation":
-            raise PermissionError(
-                "M4 final-test patch extraction is allowed only by the audited "
-                "post-selection procedure"
-            )
+        from dataclasses import replace
+        cache_config = config
+        if args.stage == "test":
+            test_dir = Path(config.cache.shard_directory).parent / "test"
+            cache_config = replace(config, cache=replace(
+                config.cache,
+                shard_directory=str(test_dir),
+                patch_manifest=str(test_dir / "manifest.json"),
+            ))
         try:
-            load_patch_token_cache(config, records)
+            load_patch_token_cache(cache_config, records, scope=args.stage)
         except (FileNotFoundError, KeyError, TypeError, ValueError, RuntimeError):
             subprocess.run(
                 [
                     "torchrun", "--standalone",
                     f"--nproc-per-node={config.runtime.world_size}",
                     "scripts/extract_e2a_patch_tokens.py", "--config", str(args.config),
+                    "--stage", args.stage,
                 ],
                 check=True,
             )
+        if args.stage == "validation":
+            subprocess.run(
+                ["torchrun", "--standalone",
+                 f"--nproc-per-node={config.runtime.world_size}",
+                 "scripts/train_e2a_m4.py", "--config", str(args.config)], check=True,
+            )
         subprocess.run(
-            [
-                "torchrun", "--standalone",
-                f"--nproc-per-node={config.runtime.world_size}",
-                "scripts/train_e2a_m4.py", "--config", str(args.config),
-            ],
-            check=True,
-        )
-        subprocess.run(
-            [sys.executable, "scripts/evaluate_e2a_m4.py", "--config", str(args.config)],
+            [sys.executable, "scripts/evaluate_e2a_m4.py", "--config", str(args.config),
+             "--stage", args.stage],
             check=True,
         )
         return

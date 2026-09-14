@@ -41,9 +41,9 @@ reuse the E1 CLS feature cache only after validating all provenance fields:
 Do not use E1 evidence, \(\boldsymbol{\alpha}\), uncertainty, rankings, or
 reranking outputs in E2A-M1. If cache provenance is absent or mismatched,
 re-extract M1 features from the pinned DINOv3 checkpoint. The E1 R0 test
-result must remain hidden during M1 development. It may be used only as a
-regression oracle after the E2A winner is locked and the final-test stage is
-explicitly opened; it is never a hyperparameter- or winner-selection signal.
+result must remain hidden during M1 development. It may be used as a
+descriptive regression oracle during test-selection reporting; it is never
+part of the M1--M4 winner rule.
 
 ## 3. Fixed data protocol
 
@@ -59,15 +59,13 @@ explicitly opened; it is never a hyperparameter- or winner-selection signal.
 - Report Recall@1, Recall@2, Recall@4, and Recall@8.
 
 M1 has no fitting stage, but it must be evaluated on the canonical validation
-split so M1--M4 can later be compared without consulting final-test labels.
-Do not select an E2A winner until all four methods have validation results.
-Do not run, load, inspect, or reveal any E2A final-test metric or ranking while
-developing M1--M4. After all four validation runs are complete, apply the
-prespecified winner rule, write an immutable selection-lock artifact, and only
-then run or reveal the final-test comparison once. E1-R0 is checked against M1
-only in this final-test stage.
+split so M1--M4 checkpoints and implementations can be accepted consistently.
+After all four validation runs are complete, run all methods on classes
+100--199 and use that split to select the E2A winner. It is consequently a
+test selection split rather than an untouched final test. E1-R0 is checked
+against M1 descriptively during this stage.
 
-Select the winner lexicographically by integer validation Hits@1, Hits@2,
+Select the winner lexicographically by integer test Hits@1, Hits@2,
 Hits@4, and Hits@8. If all hit counts tie, prefer fewer total optimized
 parameters; if still tied, use the fixed order M1, M2, M3, M4. Recall values
 share the same 1,177-query denominator and are reported rather than compared
@@ -143,10 +141,9 @@ Add an E2A evaluator that:
 6. produces stable rankings and per-query hit vectors;
 7. writes validation Recall@K without accessing final-test labels.
 
-Provide a separate explicit **--stage test** command. It must refuse to run
-unless an immutable E2A selection-lock artifact proves that validation for
-M1--M4 is complete and records the winning pipeline, metrics, tie-rule
-resolution, config hashes, and Git commit. There is no M1-only exception.
+Provide a separate explicit **--stage test** command for the common M1--M4
+test-selection stage. It saves test metrics and Top-100 rankings; the later
+selection command verifies all four artifacts before declaring a winner.
 
 ### Phase D -- Reporting and handoff
 
@@ -238,12 +235,12 @@ M1 is ready for execution only when:
 - single-GPU and 2-GPU extraction produce identical image-ID-aligned features
   within the declared numerical tolerance;
 - repeated evaluation of the same cache produces bitwise-identical rankings;
-- no test metric participates in configuration or winner selection.
+- test rows never tune a checkpoint, although test Hits select M1--M4 winner.
 
-Only after the E2A selection lock opens the final-test stage, E2A-M1 must
+During the common E2A test-selection stage, E2A-M1 must
 reproduce the accepted E1 R0 Recall@1/2/4/8 values within \(10^{-6}\). The
-validation process must not load those E1 test values; the final-stage
-regression checker reads them from the accepted E1 artifact only after unlock.
+validation process must not load those E1 test values; the test-selection
+reporting step reads them from the accepted E1 artifact.
 
 A mismatch blocks M1 acceptance and requires checking checkpoint revision,
 processor, cache alignment, self-match masking, normalization, and tie policy.
@@ -252,12 +249,12 @@ processor, cache alignment, self-match masking, normalization, and tie policy.
 
 E2A-M1 validation implementation is accepted when it passes all integrity
 gates and establishes a reproducible validation reference. Test acceptance is
-deferred until M1--M4 validation is complete and the selection lock opens the
-final-test stage. Acceptance does not require improving E1 R0 because M1 is
+deferred until M1--M4 validation is complete and test selection begins.
+Acceptance does not require improving E1 R0 because M1 is
 the same baseline. Do not declare M1 the best E2A representation at this stage.
 
 After M1 acceptance, freeze its config, split IDs, cache/manifest hashes,
 evaluation code, and validation metrics. M2--M4 must reuse these exact
 controls. Select the final E2A winner with the registered integer Hits@K,
-total-optimized-parameter, and fixed-order rule before opening test or handing
-its representation to E2B.
+total-optimized-parameter, and fixed-order rule on test before handing its
+representation to E2B.

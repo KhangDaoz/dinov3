@@ -1,10 +1,11 @@
 #!/usr/bin/env python
-"""Extract development-only final patch tokens for E2A-M4."""
+"""Extract final patch tokens for E2A-M4 validation or test selection."""
 
 from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import torch
@@ -28,6 +29,7 @@ from uncertainty_retrieval.utils import (
 def _args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True, type=Path)
+    parser.add_argument("--stage", choices=("validation", "test"), default="validation")
     return parser.parse_args()
 
 
@@ -53,6 +55,13 @@ def main() -> None:
     config = load_e2a_config(args.config)
     if config.representation.method != "m4":
         raise ValueError("Patch-token extraction requires an M4 config")
+    if args.stage == "test":
+        test_dir = Path(config.cache.shard_directory).parent / "test"
+        config = replace(config, cache=replace(
+            config.cache,
+            shard_directory=str(test_dir),
+            patch_manifest=str(test_dir / "manifest.json"),
+        ))
     rank, world_size, _, device = initialize_distributed()
     if world_size != config.runtime.world_size:
         raise RuntimeError(f"Expected {config.runtime.world_size} ranks")
@@ -65,9 +74,10 @@ def main() -> None:
         records, config.dataset.expected_development_images,
         config.dataset.expected_test_images,
     )
-    development = [record for record in records if record.split == "development"]
-    local_records = development[rank::world_size]
-    fidelity_ids = _fidelity_ids(development, config.cache.fidelity_samples)
+    selected_split = "development" if args.stage == "validation" else "test"
+    selected = [record for record in records if record.split == selected_split]
+    local_records = selected[rank::world_size]
+    fidelity_ids = _fidelity_ids(selected, config.cache.fidelity_samples)
     backbone, processor = DINOv3Backbone.from_pretrained(
         config.model.model_id, config.model.revision, config.model.register_tokens
     )
@@ -139,7 +149,7 @@ def main() -> None:
         "patch_tokens": config.model.expected_patch_tokens,
         "embedding_dim": config.model.embedding_dim,
         "storage_dtype": storage_dtype,
-        "scope": "development_only",
+        "scope": f"{selected_split}_only",
         "fidelity_ids": fidelity_local_ids,
         "fidelity_statistics": fidelity,
     }
@@ -149,7 +159,7 @@ def main() -> None:
             "features": stored_features,
             "image_ids": image_ids,
             "labels": labels,
-            "splits": ["development"] * len(image_ids),
+            "splits": [selected_split] * len(image_ids),
             "metadata": metadata,
         },
         shard_path,
@@ -182,7 +192,7 @@ def main() -> None:
             "min_mean_cosine": min(item["min_mean_cosine"] for item in statistics),
         }
         if len(all_ids) != len(set(all_ids)) or set(all_ids) != {
-            record.image_id for record in development
+            record.image_id for record in selected
         }:
             raise ValueError("M4 patch shards do not cover development exactly")
         write_patch_manifest(

@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Export and evaluate the selected E2A-M4 validation checkpoint."""
+"""Evaluate the selected E2A-M4 checkpoint on validation or test."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import argparse
 import json
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import torch
@@ -37,7 +38,7 @@ def _forward(model, cache, records, device, batch_size):
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True, type=Path)
-    parser.add_argument("--stage", choices=("validation",), default="validation")
+    parser.add_argument("--stage", choices=("validation", "test"), default="validation")
     args = parser.parse_args()
     started = time.perf_counter()
     config = load_e2a_config(args.config)
@@ -50,13 +51,25 @@ def main() -> None:
     fit, validation = split_development_records(
         records, config.dataset.validation_fraction, config.dataset.split_seed
     )
-    validation_ids = torch.tensor([record.image_id for record in validation])
-    reference_ids = torch.load(
-        config.evaluation.reference_validation_ids, map_location="cpu", weights_only=True
-    )
-    if not torch.equal(reference_ids, validation_ids):
-        raise ValueError("M4 validation IDs differ from accepted M1--M3")
-    cache = load_patch_token_cache(config, records)
+    if args.stage == "validation":
+        selected = validation
+        selected_ids = torch.tensor([record.image_id for record in selected])
+        reference_ids = torch.load(
+            config.evaluation.reference_validation_ids, map_location="cpu", weights_only=True
+        )
+        if not torch.equal(reference_ids, selected_ids):
+            raise ValueError("M4 validation IDs differ from accepted M1--M3")
+        cache_config = config
+    else:
+        selected = [record for record in records if record.split == "test"]
+        selected_ids = torch.tensor([record.image_id for record in selected])
+        test_dir = Path(config.cache.shard_directory).parent / "test"
+        cache_config = replace(config, cache=replace(
+            config.cache,
+            shard_directory=str(test_dir),
+            patch_manifest=str(test_dir / "manifest.json"),
+        ))
+    cache = load_patch_token_cache(cache_config, records, scope=args.stage)
     checkpoint_path = Path(config.output.root) / "checkpoints" / "best.pt"
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     expected = {
@@ -74,44 +87,45 @@ def main() -> None:
     ).to(device)
     model.load_state_dict(checkpoint["attention"])
     model.eval()
-    val_features, val_weights = _forward(
-        model, cache, validation, device, config.runtime.batch_size
+    selected_features, selected_weights = _forward(
+        model, cache, selected, device, config.runtime.batch_size
     )
-    fit_features, _ = _forward(model, cache, fit, device, config.runtime.batch_size)
-    val_labels = torch.tensor([record.original_label for record in validation])
+    selected_labels = torch.tensor([record.original_label for record in selected])
     metrics, ranking = evaluate_top100(
-        val_features, validation_ids, val_labels, device,
+        selected_features, selected_ids, selected_labels, device,
         config.runtime.similarity_chunk_size, config.evaluation.ranking_depth,
     )
-    ranking["split"] = "validation"
+    ranking["split"] = args.stage
     root = Path(config.output.root)
-    save_ranking_artifact(ranking, root / "rankings" / "validation_top100.pt")
-    write_json(metrics, root / "metrics" / "validation.json")
+    save_ranking_artifact(ranking, root / "rankings" / f"{args.stage}_top100.pt")
+    write_json(metrics, root / "metrics" / f"{args.stage}.json")
     atomic_torch_save(
-        {"schema_version": 2, "features": val_features,
-         "image_ids": validation_ids, "labels": val_labels, "split": "validation"},
-        root / "embeddings" / "validation.pt",
+        {"schema_version": 2, "features": selected_features,
+         "image_ids": selected_ids, "labels": selected_labels, "split": args.stage},
+        root / "embeddings" / f"{args.stage}.pt",
+    )
+    if args.stage == "validation":
+        fit_features, _ = _forward(model, cache, fit, device, config.runtime.batch_size)
+        atomic_torch_save(
+            {"schema_version": 2, "features": fit_features,
+             "image_ids": torch.tensor([r.image_id for r in fit]),
+             "labels": torch.tensor([r.original_label for r in fit]), "split": "fit"},
+            root / "embeddings" / "fit.pt",
+        )
+    entropy = -(selected_weights * selected_weights.clamp_min(1e-12).log()).sum(dim=1)
+    atomic_torch_save(
+        {"image_ids": selected_ids, "weights": selected_weights.half(),
+         "diagnostic_only": True}, root / "attention" / f"{args.stage}_weights.pt"
     )
     atomic_torch_save(
-        {"schema_version": 2, "features": fit_features,
-         "image_ids": torch.tensor([r.image_id for r in fit]),
-         "labels": torch.tensor([r.original_label for r in fit]), "split": "fit"},
-        root / "embeddings" / "fit.pt",
-    )
-    entropy = -(val_weights * val_weights.clamp_min(1e-12).log()).sum(dim=1)
-    atomic_torch_save(
-        {"image_ids": validation_ids, "weights": val_weights.half(),
-         "diagnostic_only": True}, root / "attention" / "validation_weights.pt"
-    )
-    atomic_torch_save(
-        {"image_ids": validation_ids, "entropy": entropy.float(),
-         "diagnostic_only": True}, root / "attention" / "validation_entropy.pt"
+        {"image_ids": selected_ids, "entropy": entropy.float(),
+         "diagnostic_only": True}, root / "attention" / f"{args.stage}_entropy.pt"
     )
     write_json(
         {
             "schema_version": 2, "method": "m4", "representation": "attention_pool",
-            "normalization": "l2_at_retrieval", "shape": list(val_features.shape),
-            "dtype": str(val_features.dtype),
+            "normalization": "l2_at_retrieval", "shape": list(selected_features.shape),
+            "dtype": str(selected_features.dtype),
             "patch_manifest_sha256": sha256_file(config.cache.patch_manifest),
             "checkpoint_sha256": sha256_file(checkpoint_path),
             "selected_epoch": checkpoint["epoch"],
@@ -124,18 +138,27 @@ def main() -> None:
     environment_path = root / "environment.json"
     old = json.loads(environment_path.read_text(encoding="utf-8"))
     training_environment = old.get("training", old)
+    evaluations = dict(old.get("evaluations", {}))
+    if "evaluation" in old and "validation" not in evaluations:
+        evaluations["validation"] = old["evaluation"]
+    evaluations[args.stage] = environment_metadata(sys.argv)
     write_json(
-        {"training": training_environment, "evaluation": environment_metadata(sys.argv)},
+        {"training": training_environment, "evaluations": evaluations},
         environment_path,
     )
     metadata_path = root / "metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    metadata["evaluation"] = {
-        "stage": "validation", "query_count": len(validation),
+    previous_evaluation = metadata.pop("evaluation", None)
+    evaluations = dict(metadata.get("evaluations", {}))
+    if previous_evaluation is not None and "validation" not in evaluations:
+        evaluations["validation"] = previous_evaluation
+    evaluations[args.stage] = {
+        "stage": args.stage, "query_count": len(selected),
         "wall_time_seconds": time.perf_counter() - started,
         "trainable_parameters": checkpoint["provenance"]["total_trainable_parameters"],
         "deployable_parameters": checkpoint["provenance"]["deployable_parameters"],
     }
+    metadata["evaluations"] = evaluations
     write_json(metadata, metadata_path)
 
 

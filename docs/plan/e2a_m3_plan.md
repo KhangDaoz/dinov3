@@ -62,9 +62,9 @@ backbone again for M3.
   by M1/M2, with manifest hash
   `d9455ac8948ff640f94017339681a51744f6351f1db053732b3153a4c9c958ee`.
 - M3 fitting and validation use different images but the same classes 0--99.
-  The final test contains unseen classes 100--199. Therefore validation
+  The test selection split contains unseen classes 100--199. Therefore validation
   measures within-class-set image generalization and is an imperfect proxy
-  for the class-generalization required by final test; record this explicitly
+  for the class-generalization required by test selection; record this explicitly
   as a limitation.
 - Seed 42 is the preregistered M3 decision run and must be used consistently
   for projection/proxy initialization, balanced sampling, and training. Do not
@@ -76,12 +76,11 @@ backbone again for M3.
 - Do not tune architecture, loss, margin, scale, optimizer, or learning rate
   after observing M3 validation results.
 
-M3 validation becomes one row in the later M1--M4 winner comparison. It does
-not authorize a winner or selection lock. No test feature row may be passed
-through the learned projection, and final-test labels, metrics, rankings, and
-E1-R0 test results remain inaccessible during M3 development.
+M3 validation selects its checkpoint but does not authorize an E2A winner.
+No test feature row may be passed through the learned projection during M3
+training; test projection happens later in the common selection stage.
 
-The later pipeline winner is selected by integer validation Hits@1, Hits@2,
+The later pipeline winner is selected by integer test Hits@1, Hits@2,
 Hits@4, Hits@8, total optimized parameter count, then fixed M1--M4 order.
 Recall values are not compared with a floating-point tolerance.
 
@@ -150,7 +149,7 @@ metadata. Rank 0 alone writes artifacts after distributed synchronization.
 Generalize `evaluate_e2a.py` so M3 loads the selected projection checkpoint,
 joins M1/M2 caches, and exports method-owned embeddings. During this stage,
 materialize only development-fit and validation embeddings. Test embeddings
-may be generated only after the final E2A selection lock opens.
+may be generated only during the common test-selection stage.
 
 Evaluate exact cosine retrieval on validation and save ordered Top-100
 candidate IDs and scores. Recompute Recall@1/2/4/8 from the serialized ranking
@@ -242,7 +241,7 @@ Focused unit tests must cover:
 - epoch selection by integer Hits@1, Hits@2, Hits@4, Hits@8, then earliest
   epoch, including cases where rounded Recall values appear tied;
 - checkpoint/cache/config hash mismatch rejection;
-- Top-100 integrity, metric recomputation, and final-test fail-closed behavior.
+- Top-100 integrity and metric recomputation.
 
 During implementation, run only the focused E2A-M3 unit tests. Leave the full
 suite, integration smoke test, training run, and validation experiment to the
@@ -251,7 +250,7 @@ user.
 M3 is accepted only when the selected checkpoint is reproducible from fit
 data, no validation/test sample contributes a gradient, both source caches and
 the validation hash match M1/M2, all saved embeddings/rankings pass integrity
-checks, and no final-test artifact exists. Completion of M3 authorizes M4
+checks, and no test artifact exists. Completion of M3 authorizes M4
 implementation, not E2A winner selection.
 
 ## 9. Execution
@@ -264,5 +263,4 @@ python scripts/run_e2a.py \
   --stage validation
 ```
 
-The runner must refuse `--stage test` until the immutable M1--M4 selection
-lock exists and identifies the permitted final-test evaluation procedure.
+Run `--stage test` only in the later common M1--M4 test-selection stage.

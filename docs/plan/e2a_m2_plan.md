@@ -29,18 +29,17 @@ Reuse the accepted M1 controls without modification:
 - frozen `facebook/dinov3-vitb16-pretrain-lvd1689m` at revision
   `5931719e67bbdb9737e363e781fb0c67687896bc`;
 - official 224-by-224 processor settings recorded in the cache manifest;
-- CUB labels 0--99 as development and 100--199 as final test;
+- CUB labels 0--99 as development and 100--199 as the test selection split;
 - canonical stratified development validation IDs at fraction 0.2, seed 42;
 - exact FP32 cosine retrieval, image-ID self-match exclusion, stable gallery
   index tie breaking, and Recall@1/2/4/8;
-- integer validation Hits@1 as the primary E2A winner criterion, followed by
+- integer test Hits@1 as the primary E2A winner criterion, followed by
   Hits@2, Hits@4, Hits@8, total optimized parameter count, then fixed M1--M4
   order;
 - ordered Top-100 candidate IDs and cosine scores for every query.
 
-Only run M2 validation now. Do not run, load, inspect, or reveal M2 test
-metrics or rankings. `--stage test` must continue to fail closed until M1--M4
-validation is complete and the immutable selection lock exists. M1's accepted
+Only run M2 validation during method development. Test evaluation belongs to
+the common M1--M4 selection stage after validation is complete. M1's accepted
 validation result is a comparison row, not a hyperparameter signal; M2 has no
 hyperparameter to tune.
 
@@ -107,13 +106,13 @@ or processor/checkpoint provenance differs.
 
 Reuse the generic chunked evaluator to produce Recall@1/2/4/8 and a Top-100
 artifact. Recompute metrics from the saved ranking as an acceptance check.
-Do not change M1 metrics and do not create a winner or selection lock yet.
+Do not change M1 metrics and do not select a winner yet.
 
 ### Phase D -- Reporting
 
 Update the M2 row of `reports/e2a.tex` with validation results, parameter count
 zero, cache hash, runtime, and an explicit note that training-seed variance is
-not applicable. Keep all final-test cells hidden. Record the M2-minus-M1
+not applicable. Record the M2-minus-M1
 Recall@K differences descriptively without declaring an E2A winner before M3
 and M4 are validated.
 
@@ -190,5 +189,4 @@ python scripts/run_e2a.py \
 Accept M2 only when cache provenance is complete, the validation hash matches
 M1, all binary-artifact integrity checks pass, metrics recomputed from the
 saved Top-100 ranking exactly match JSON, and no test metric/ranking exists.
-Completion of M2 authorizes implementation of M3, not winner selection or
-final-test execution.
+Completion of M2 authorizes implementation of M3, not winner selection.

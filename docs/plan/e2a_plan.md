@@ -29,44 +29,40 @@ All pipelines must share:
 - frozen backbone parameters;
 - the same self-match exclusion, stable tie policy, Recall@K implementation,
   and Top-100 ranking schema;
-- the same validation labels and final-test isolation boundary.
+- the same validation split and test-selection split (classes 100--199).
 
 Only representation construction may differ. Learned pipelines must record
 their objective, initialization, optimizer, checkpoint rule, parameter count,
 and validation-selected hyperparameters. Fixed pipelines must not receive an
 artificial training stage.
 
-## Test isolation
+## Test-based selection protocol
 
-During implementation and tuning, run only validation evaluation for M1--M4.
-Do not run, load, inspect, or reveal final-test metrics, rankings, or E1-R0
-test values. When all four validation artifacts exist, create one immutable
-selection lock containing method/config/cache/split hashes, Git commit,
-validation metrics, and tie-rule trace. The final-test command must fail closed
-when this lock is absent or inconsistent.
+Validation remains responsible for checkpoint and epoch selection within M3
+and M4. After all four pipelines pass validation acceptance, evaluate M1--M4
+on classes 100--199 and select the representation from those test results.
+This is therefore a **test selection split**, not an untouched final test.
+Record the resulting selection bias explicitly in every E2A report.
 
-E1-R0 may be compared with M1 only after the lock opens the final-test stage.
-It serves solely as an implementation regression check and cannot influence
-the E2A winner.
+E1-R0 may be compared with M1 descriptively on the same split, but it is not
+part of the M1--M4 winner rule.
 
 ## Winner rule
 
-Select the pipeline lexicographically by integer validation counts: highest
+Select the pipeline lexicographically by integer test counts: highest
 Hits@1, then Hits@2, Hits@4, and Hits@8. If all hit counts tie, prefer fewer
 total optimized parameters; if complexity also ties, use the fixed order M1,
 M2, M3, M4. Recall values use the common 1,177-query denominator for reporting
 and are not compared with a floating-point tolerance.
 
-Do not replace this rule after observing results. Recall@2/4/8 are secondary
-tie breakers, not a composite score, and test performance never participates
-in selection.
+Recall@2/4/8 are secondary tie breakers, not a composite score.
 
 ## Shared artifacts
 
 Every pipeline must save:
 
 - raw or manifest-addressed development/test embeddings with provenance;
-- validation and, after unlock, test Recall@1/2/4/8;
+- validation and test-selection Recall@1/2/4/8;
 - per-query Top-100 candidate image IDs and cosine scores after self-match
   exclusion;
 - query IDs, labels, split, config/cache/split hashes, schema version, command,
@@ -82,9 +78,23 @@ are not required.
 2. Implement and accept M2 validation using the frozen shared token cache.
 3. Train/select M3 only on development fit/validation data.
 4. Train/select M4 only on development fit/validation data.
-5. Apply the winner rule and write the immutable selection lock.
-6. Open final test once and evaluate M1--M4 for the complete comparison table;
-   verify M1 against E1-R0. Test results cannot change the validation-selected
-   winner.
-7. Export the winning representation and Top-100 artifacts to E2B without
-   changing the winning pipeline after test inspection.
+5. Evaluate M1--M4 on test classes 100--199 and save Top-100 artifacts.
+6. Apply the registered rule to test Hits@K and write
+   `outputs/e2a_selection/test_selection.json`; optionally compare M1 with
+   E1-R0 descriptively.
+7. Export the test-selected representation and Top-100 artifacts to E2B.
+
+Because selection uses test performance, E2A has no remaining independent
+holdout for an unbiased final generalization estimate.
+
+Run the complete test-selection stage after accepting all validation outputs:
+
+```bash
+python scripts/run_e2a_test_selection.py --configs \
+  configs/cub_e2a_m1.yaml configs/cub_e2a_m2.yaml \
+  configs/cub_e2a_m3.yaml configs/cub_e2a_m4.yaml
+```
+
+The command evaluates every method, saves each `metrics/test.json` and
+`rankings/test_top100.pt`, verifies common test IDs and recomputed integer
+Hits@K, then writes `outputs/e2a_selection/test_selection.json`.

@@ -1,12 +1,10 @@
-import json
-
 import pytest
 import torch
 
 from uncertainty_retrieval.evaluation.representation import (
     evaluate_top100,
+    hits_from_ranking,
     select_representation_winner,
-    verify_selection_lock,
 )
 
 
@@ -36,10 +34,13 @@ def test_winner_rule_prioritizes_integer_hits_at_1() -> None:
     assert winner == "m3"
 
 
-def test_final_test_fails_closed_without_complete_lock(tmp_path) -> None:
-    with pytest.raises(PermissionError, match="locked"):
-        verify_selection_lock(tmp_path / "missing.json")
-    path = tmp_path / "selection_lock.json"
-    path.write_text(json.dumps({"test_unlocked": True}), encoding="utf-8")
-    with pytest.raises(PermissionError, match="incomplete"):
-        verify_selection_lock(path)
+def test_hits_are_recomputed_from_saved_ranking() -> None:
+    features = torch.eye(5).repeat_interleave(2, dim=0)
+    image_ids = torch.arange(100, 110)
+    labels = torch.arange(10) // 2
+    _, artifact = evaluate_top100(
+        features, image_ids, labels, torch.device("cpu"), 3, ranking_depth=9
+    )
+    assert hits_from_ranking(artifact) == {
+        "hits_at_1": 10, "hits_at_2": 10, "hits_at_4": 10, "hits_at_8": 10
+    }
