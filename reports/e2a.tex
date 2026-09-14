@@ -1,0 +1,33 @@
+\section{E2A: Comparison of Representation Pipelines}
+\label{sec:e2a}
+
+E2A compares four representation pipelines under the same CUB-200-2011
+class-disjoint protocol. M1 and M2 are fixed representations; M3 and M4 may
+use learned aggregation. The winner is selected exclusively by validation
+Recall@1, with the preregistered Recall@2/4/8 and parameter-count tie rules.
+Final-test results remain locked until validation for M1--M4 is complete.
+
+\subsection{M1: Final-layer CLS token}
+
+M1 uses the frozen 768-dimensional final-layer DINOv3 CLS token, L2
+normalization, cosine similarity, and image-ID self-match exclusion. It has no
+trainable parameters, so training-seed variance does not apply. Table entries
+remain pending until the validation run is executed. Rankings retain the
+ordered Top-100 candidate IDs and cosine scores for later E2B construction,
+reranking, and failure analysis.
+
+\begin{table}[ht]
+  \centering
+  \caption{E2A validation results. Test metrics are intentionally omitted
+  until the representation winner is locked.}
+  \begin{tabular}{lrrrrr}
+    \hline
+    Pipeline & Parameters & R@1 & R@2 & R@4 & R@8 \\
+    \hline
+    M1 (final CLS) & 0 & Pending & Pending & Pending & Pending \\
+    M2 & -- & Pending & Pending & Pending & Pending \\
+    M3 & -- & Pending & Pending & Pending & Pending \\
+    M4 & -- & Pending & Pending & Pending & Pending \\
+    \hline
+  \end{tabular}
+\end{table}

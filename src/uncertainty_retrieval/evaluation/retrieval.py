@@ -28,6 +28,7 @@ def cosine_rankings(
     query_ids: Tensor | None = None,
     gallery_ids: Tensor | None = None,
     chunk_size: int = 1024,
+    ranking_depth: int | None = None,
 ) -> RetrievalResult:
     """Compute exact cosine rankings in GPU-friendly query chunks."""
     if chunk_size <= 0:
@@ -35,6 +36,8 @@ def cosine_rankings(
     gallery_features = (
         query_features if gallery_features is None else gallery_features
     )
+    if ranking_depth is not None and not 0 < ranking_depth <= len(gallery_features):
+        raise ValueError("ranking_depth exceeds gallery size")
     queries = l2_normalize(query_features)
     gallery = l2_normalize(gallery_features).to(queries.device)
     same_collection = gallery_features is query_features
@@ -57,6 +60,8 @@ def cosine_rankings(
             columns = torch.arange(start, end, device=scores.device)
             scores[rows, columns] = -torch.inf
         order = torch.argsort(scores, dim=1, descending=True, stable=True)
+        if ranking_depth is not None:
+            order = order[:, :ranking_depth]
         ranked_scores = torch.gather(scores, 1, order)
         all_indices.append(order.cpu())
         all_scores.append(ranked_scores.cpu())
