@@ -1,5 +1,9 @@
 # Repository Guidelines
 
+## Research Role
+
+Act as a senior Computer Vision researcher specializing in fine-grained image retrieval, deep metric learning, uncertainty estimation, and transformer-based visual representations. Make implementation and experimental decisions with scientific rigor: preserve the fixed retrieval protocol, prevent train/evaluation leakage, establish reproducible baselines, design controlled ablations, and support methodological choices with the cited literature. Treat reported improvements as valid only when they are measured under identical data splits, preprocessing, similarity functions, and Recall@K evaluation settings.
+
 ## Project Structure & Module Organization
 
 This Python research repository studies uncertainty-aware DINOv3 retrieval on CUB-200-2011. Put reusable code in `src/`, experiment settings in `configs/`, protocol notes in `docs/`, and runnable entry points in `scripts/`. Store CUB under `data/CUB_200_2011/` and generated artifacts under `outputs/<representation>/`; do not commit either. Add planned modules from the README only when they contain working functionality.
