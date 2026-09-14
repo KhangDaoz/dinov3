@@ -36,6 +36,7 @@ class RepresentationConfig:
     source_layer: str = "final"
     pooling: str = "none"
     normalization: str = "l2"
+    attention_hidden_dim: int | None = None
 
 
 @dataclass(frozen=True)
@@ -68,7 +69,6 @@ class E2AEvaluationConfig:
     ranking_depth: int = 100
     self_match_exclusion: bool = True
     tie_policy: str = "stable_gallery_index"
-    winner_tolerance: float = 1.0e-6
     reference_validation_ids: str = (
         "outputs/e2a_cls/m1/split/validation_image_ids.pt"
     )
@@ -87,6 +87,14 @@ class E2ACacheConfig:
     mean_patch_path: str | None = None
     cls_manifest: str | None = None
     mean_patch_manifest: str | None = None
+    shard_directory: str | None = None
+    patch_manifest: str | None = None
+    storage_dtype: str | None = None
+    extraction_amp: bool | None = None
+    fidelity_samples: int | None = None
+    fidelity_relative_l2_max: float | None = None
+    fidelity_patch_cosine_min: float | None = None
+    fidelity_mean_cosine_min: float | None = None
 
 
 @dataclass(frozen=True)
@@ -170,15 +178,17 @@ def validate_e2a_config(config: E2AConfig) -> None:
         raise ValueError("model.revision must be an immutable revision")
     representation = config.representation
     contracts = {
-        "m1": ("m1", "cls", "final", "none", "l2"),
-        "m2": ("m2", "mean_patch", "final", "mean", "l2"),
+        "m1": ("m1", "cls", "final", "none", "l2", None),
+        "m2": ("m2", "mean_patch", "final", "mean", "l2", None),
         "m3": (
             "m3",
             "cls_mean_projection",
             "final",
             "projection",
             "l2",
+            None,
         ),
+        "m4": ("m4", "attention_pool", "final_patch", "attention", "l2", 256),
     }
     actual = (
         representation.method,
@@ -186,6 +196,7 @@ def validate_e2a_config(config: E2AConfig) -> None:
         representation.source_layer,
         representation.pooling,
         representation.normalization,
+        representation.attention_hidden_dim,
     )
     expected = contracts.get(representation.method)
     if expected is None or actual != expected:
@@ -213,8 +224,6 @@ def validate_e2a_config(config: E2AConfig) -> None:
         raise ValueError("E2A requires self-match exclusion")
     if evaluation.tie_policy != "stable_gallery_index":
         raise ValueError("Unsupported tie policy")
-    if evaluation.winner_tolerance <= 0:
-        raise ValueError("winner_tolerance must be positive")
     if config.cache.schema_version <= 0:
         raise ValueError("cache.schema_version must be positive")
     if representation.method == "m2":
@@ -244,6 +253,36 @@ def validate_e2a_config(config: E2AConfig) -> None:
                 "M3 requires FP32 training because Proxy Anchor AMP gradients "
                 "overflow on T4"
             )
+    if representation.method == "m4":
+        if config.training != E2ATrainingConfig():
+            raise ValueError("M4 training recipe differs from the locked plan")
+        if config.runtime.amp:
+            raise ValueError("M4 attention and Proxy Anchor training require FP32")
+        cache = config.cache
+        required = (
+            cache.shard_directory,
+            cache.patch_manifest,
+            cache.storage_dtype,
+            cache.extraction_amp,
+            cache.fidelity_samples,
+            cache.fidelity_relative_l2_max,
+            cache.fidelity_patch_cosine_min,
+            cache.fidelity_mean_cosine_min,
+            cache.reference_manifest,
+        )
+        if any(value is None for value in required):
+            raise ValueError("M4 requires patch-cache and fidelity settings")
+        expected_fidelity = ("float16", True, 128, 1e-3, 0.99999, 0.99999)
+        actual_fidelity = (
+            cache.storage_dtype,
+            cache.extraction_amp,
+            cache.fidelity_samples,
+            cache.fidelity_relative_l2_max,
+            cache.fidelity_patch_cosine_min,
+            cache.fidelity_mean_cosine_min,
+        )
+        if actual_fidelity != expected_fidelity:
+            raise ValueError("M4 FP16 fidelity contract differs from the plan")
 
 
 def load_e2a_config(path: str | Path) -> E2AConfig:

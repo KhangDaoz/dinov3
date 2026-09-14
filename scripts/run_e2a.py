@@ -12,6 +12,7 @@ from pathlib import Path
 from uncertainty_retrieval.config_e2a import load_e2a_config
 from uncertainty_retrieval.data.cub import load_cub_records
 from uncertainty_retrieval.data.feature_cache import find_reusable_feature_cache
+from uncertainty_retrieval.data.patch_token_cache import load_patch_token_cache
 from uncertainty_retrieval.evaluation.representation import verify_selection_lock
 
 
@@ -59,6 +60,36 @@ def main() -> None:
                 "--stage",
                 args.stage,
             ],
+            check=True,
+        )
+        return
+    if config.representation.method == "m4":
+        if args.stage != "validation":
+            raise PermissionError(
+                "M4 final-test patch extraction is allowed only by the audited "
+                "post-selection procedure"
+            )
+        try:
+            load_patch_token_cache(config, records)
+        except (FileNotFoundError, KeyError, TypeError, ValueError, RuntimeError):
+            subprocess.run(
+                [
+                    "torchrun", "--standalone",
+                    f"--nproc-per-node={config.runtime.world_size}",
+                    "scripts/extract_e2a_patch_tokens.py", "--config", str(args.config),
+                ],
+                check=True,
+            )
+        subprocess.run(
+            [
+                "torchrun", "--standalone",
+                f"--nproc-per-node={config.runtime.world_size}",
+                "scripts/train_e2a_m4.py", "--config", str(args.config),
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [sys.executable, "scripts/evaluate_e2a_m4.py", "--config", str(args.config)],
             check=True,
         )
         return

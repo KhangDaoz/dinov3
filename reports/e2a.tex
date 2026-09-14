@@ -3,8 +3,9 @@
 
 E2A compares four representation pipelines under the same CUB-200-2011
 class-disjoint protocol. M1 and M2 are fixed representations; M3 and M4 may
-use learned aggregation. The winner is selected exclusively by validation
-Recall@1, with the preregistered Recall@2/4/8 and parameter-count tie rules.
+use learned aggregation. The winner is selected by integer validation
+Hits@1, then Hits@2/4/8, total optimized parameter count, and fixed M1--M4
+order.
 Final-test results remain locked until validation for M1--M4 is complete.
 
 \subsection{M1: Final-layer CLS token}

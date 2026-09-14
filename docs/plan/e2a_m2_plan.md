@@ -33,8 +33,9 @@ Reuse the accepted M1 controls without modification:
 - canonical stratified development validation IDs at fraction 0.2, seed 42;
 - exact FP32 cosine retrieval, image-ID self-match exclusion, stable gallery
   index tie breaking, and Recall@1/2/4/8;
-- validation Recall@1 as the primary E2A winner criterion and the registered
-  Recall@2, Recall@4, Recall@8, parameter-count, then M1--M4 tie rule;
+- integer validation Hits@1 as the primary E2A winner criterion, followed by
+  Hits@2, Hits@4, Hits@8, total optimized parameter count, then fixed M1--M4
+  order;
 - ordered Top-100 candidate IDs and cosine scores for every query.
 
 Only run M2 validation now. Do not run, load, inspect, or reveal M2 test

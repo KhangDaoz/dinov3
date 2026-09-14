@@ -34,7 +34,6 @@ evaluation:
   ranking_depth: 100
   self_match_exclusion: true
   tie_policy: stable_gallery_index
-  winner_tolerance: 0.000001
   reference_validation_ids: outputs/e2a_cls/m1/split/validation_image_ids.pt
 
 cache:

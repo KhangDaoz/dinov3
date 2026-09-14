@@ -15,6 +15,7 @@ from .retrieval import cosine_rankings, recall_at_k
 
 METHOD_ORDER = ("m1", "m2", "m3", "m4")
 METRIC_ORDER = ("recall_at_1", "recall_at_2", "recall_at_4", "recall_at_8")
+HIT_ORDER = ("hits_at_1", "hits_at_2", "hits_at_4", "hits_at_8")
 
 
 def evaluate_top100(
@@ -57,28 +58,27 @@ def evaluate_top100(
 
 
 def select_representation_winner(
-    validation_metrics: dict[str, dict[str, float]],
+    validation_hits: dict[str, dict[str, int]],
     trainable_parameters: dict[str, int],
-    tolerance: float = 1.0e-6,
 ) -> tuple[str, list[dict[str, Any]]]:
-    """Apply the preregistered Recall@1-first lexicographic tie rule."""
-    if set(validation_metrics) != set(METHOD_ORDER):
+    """Apply the preregistered integer Hits@K lexicographic rule."""
+    if set(validation_hits) != set(METHOD_ORDER):
         raise ValueError("Winner selection requires validation for M1--M4")
     if set(trainable_parameters) != set(METHOD_ORDER):
         raise ValueError("Parameter counts are required for M1--M4")
-    if tolerance <= 0:
-        raise ValueError("tolerance must be positive")
-    for method, metrics in validation_metrics.items():
-        missing = set(METRIC_ORDER) - metrics.keys()
+    for method, hits in validation_hits.items():
+        missing = set(HIT_ORDER) - hits.keys()
         if missing:
-            raise ValueError(f"{method} metrics missing: {sorted(missing)}")
+            raise ValueError(f"{method} hit counts missing: {sorted(missing)}")
+        if any(not isinstance(hits[key], int) or hits[key] < 0 for key in HIT_ORDER):
+            raise ValueError(f"{method} hit counts must be non-negative integers")
 
     trace: list[dict[str, Any]] = []
 
     def compare(left: str, right: str) -> int:
-        for metric in METRIC_ORDER:
-            delta = validation_metrics[left][metric] - validation_metrics[right][metric]
-            if abs(delta) > tolerance:
+        for metric in HIT_ORDER:
+            delta = validation_hits[left][metric] - validation_hits[right][metric]
+            if delta:
                 preferred = left if delta > 0 else right
                 trace.append(
                     {

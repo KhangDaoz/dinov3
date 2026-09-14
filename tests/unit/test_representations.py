@@ -3,6 +3,7 @@ import torch
 
 from uncertainty_retrieval.models.dinov3 import DINOv3Tokens
 from uncertainty_retrieval.models.representations import (
+    AttentionPatchPooling,
     CLSMeanPatchProjection,
     CLSRepresentation,
     MeanPatchRepresentation,
@@ -71,3 +72,21 @@ def test_m3_projection_concatenates_cls_then_mean_patch() -> None:
     result.sum().backward()
     assert cls.grad is not None and patch.grad is not None
     assert sum(parameter.numel() for parameter in module.parameters()) == 10
+
+
+def test_attention_pooling_weights_and_parameter_count() -> None:
+    torch.manual_seed(42)
+    module = AttentionPatchPooling(embedding_dim=768, hidden_dim=256, patch_tokens=196)
+    patches = torch.randn(2, 196, 768, requires_grad=True)
+    output = module(patches)
+    assert output.embedding.shape == (2, 768)
+    assert output.weights.shape == (2, 196)
+    assert torch.allclose(output.weights.sum(dim=1), torch.ones(2), atol=1e-6)
+    assert sum(parameter.numel() for parameter in module.parameters()) == 197121
+    output.embedding.sum().backward()
+    assert torch.isfinite(patches.grad).all()
+
+
+def test_attention_pooling_rejects_wrong_patch_count() -> None:
+    with pytest.raises(ValueError, match="Patch input"):
+        AttentionPatchPooling(4, 2, 3)(torch.randn(1, 2, 4))

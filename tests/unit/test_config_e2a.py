@@ -56,6 +56,15 @@ def test_m3_rejects_training_recipe_drift() -> None:
         validate_e2a_config(invalid)
 
 
+def test_m4_config_locks_attention_and_fidelity() -> None:
+    config = load_e2a_config(CONFIG.with_name("cub_e2a_m4.yaml"))
+    assert config.representation.method == "m4"
+    assert config.representation.attention_hidden_dim == 256
+    assert config.cache.storage_dtype == "float16"
+    assert config.cache.fidelity_samples == 128
+    assert config.runtime.amp is False
+
+
 def test_m1_rejects_patch_pooling() -> None:
     config = load_e2a_config(CONFIG)
     invalid = replace(

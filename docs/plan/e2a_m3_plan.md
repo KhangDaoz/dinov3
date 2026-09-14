@@ -81,6 +81,10 @@ not authorize a winner or selection lock. No test feature row may be passed
 through the learned projection, and final-test labels, metrics, rankings, and
 E1-R0 test results remain inaccessible during M3 development.
 
+The later pipeline winner is selected by integer validation Hits@1, Hits@2,
+Hits@4, Hits@8, total optimized parameter count, then fixed M1--M4 order.
+Recall values are not compared with a floating-point tolerance.
+
 ## 4. Fixed training recipe
 
 Use a class-balanced global batch with 20 classes and 4 images per class

@@ -6,50 +6,49 @@ dataset:
   total_classes: 200
   expected_development_images: 5864
   expected_test_images: 5924
-
 model:
   model_id: facebook/dinov3-vitb16-pretrain-lvd1689m
   revision: 5931719e67bbdb9737e363e781fb0c67687896bc
   embedding_dim: 768
   register_tokens: 4
   expected_patch_tokens: 196
-
 representation:
-  method: m3
-  name: cls_mean_projection
-  source_layer: final
-  pooling: projection
+  method: m4
+  name: attention_pool
+  source_layer: final_patch
+  pooling: attention
   normalization: l2
-
+  attention_hidden_dim: 256
 runtime:
   batch_size: 40
-  num_workers: 4
+  num_workers: 2
   prefetch_factor: 2
   amp: false
   world_size: 2
   similarity_chunk_size: 1024
-
 evaluation:
   recall_k: [1, 2, 4, 8]
   ranking_depth: 100
   self_match_exclusion: true
   tie_policy: stable_gallery_index
   reference_validation_ids: outputs/e2a_cls/m1/split/validation_image_ids.pt
-
 cache:
-  path: outputs/e2a_fusion/m3/seed_42/embeddings/validation.pt
+  path: outputs/e2a_attention_pool/m4/seed_42/embeddings/validation.pt
   reuse_candidates: []
   schema_version: 2
   materialize_embeddings: true
-  cls_path: outputs/e2a_cls/cache/dinov3_cls.pt
-  mean_patch_path: outputs/e2a_mean_patch/cache/dinov3_mean_patch.pt
-  cls_manifest: outputs/e2a_cls/m1/embeddings/manifest.json
-  mean_patch_manifest: outputs/e2a_mean_patch/m2/embeddings/manifest.json
-
+  reference_manifest: outputs/e2a_mean_patch/m2/embeddings/manifest.json
+  shard_directory: outputs/e2a_attention_pool/cache/development
+  patch_manifest: outputs/e2a_attention_pool/cache/development/manifest.json
+  storage_dtype: float16
+  extraction_amp: true
+  fidelity_samples: 128
+  fidelity_relative_l2_max: 0.001
+  fidelity_patch_cosine_min: 0.99999
+  fidelity_mean_cosine_min: 0.99999
 output:
-  root: outputs/e2a_fusion/m3/seed_42
+  root: outputs/e2a_attention_pool/m4/seed_42
   selection_lock: outputs/e2a_selection/selection_lock.json
-
 training:
   seed: 42
   epochs: 30

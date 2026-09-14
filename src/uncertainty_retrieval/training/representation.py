@@ -11,7 +11,10 @@ from torch import Tensor, nn
 from torch.utils.data import BatchSampler
 
 from uncertainty_retrieval.models.metric_learning import ProxyAnchorLoss
-from uncertainty_retrieval.models.representations import CLSMeanPatchProjection
+from uncertainty_retrieval.models.representations import (
+    AttentionPatchPooling,
+    CLSMeanPatchProjection,
+)
 
 
 class DistributedClassBalancedBatchSampler(BatchSampler):
@@ -109,6 +112,31 @@ class M3TrainingModel(nn.Module):
         return self.objective(embeddings, global_labels)
 
 
+class M4TrainingModel(nn.Module):
+    """Attention pooling and training-only proxies in a DDP-safe graph."""
+
+    def __init__(
+        self,
+        embedding_dim: int,
+        hidden_dim: int,
+        patch_tokens: int,
+        classes: int,
+        alpha: float,
+        margin: float,
+    ) -> None:
+        super().__init__()
+        self.representation = AttentionPatchPooling(
+            embedding_dim, hidden_dim, patch_tokens
+        )
+        self.objective = ProxyAnchorLoss(classes, embedding_dim, alpha, margin)
+
+    def forward(self, patches: Tensor, labels: Tensor) -> Tensor:
+        local_embeddings = self.representation(patches).embedding
+        embeddings = differentiable_global_gather(local_embeddings)
+        global_labels = global_gather_labels(labels)
+        return self.objective(embeddings, global_labels)
+
+
 def epoch_hit_key(hit_counts: dict[int, int], epoch: int) -> tuple[int, ...]:
     """Hits@1/2/4/8 followed by preference for the earliest epoch."""
     return tuple(hit_counts[k] for k in (1, 2, 4, 8)) + (-epoch,)
@@ -149,3 +177,34 @@ def atomic_torch_save(payload: dict, path: str | Path) -> None:
     temporary = destination.with_suffix(destination.suffix + ".tmp")
     torch.save(payload, temporary)
     temporary.replace(destination)
+
+
+def m4_checkpoint_payload(
+    model: M4TrainingModel,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler,
+    epoch: int,
+    metrics: dict[str, float],
+    hit_counts: dict[int, int],
+    provenance: dict,
+) -> dict:
+    state = {
+        key: value.detach().cpu()
+        for key, value in model.representation.state_dict().items()
+    }
+    proxies = {
+        key: value.detach().cpu()
+        for key, value in model.objective.state_dict().items()
+    }
+    return {
+        "schema_version": 1,
+        "method": "m4",
+        "epoch": epoch,
+        "attention": state,
+        "proxies": proxies,
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict(),
+        "validation_metrics": metrics,
+        "validation_hit_counts": hit_counts,
+        "provenance": provenance,
+    }

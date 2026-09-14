@@ -51,11 +51,11 @@ the E2A winner.
 
 ## Winner rule
 
-Choose the pipeline with the highest validation Recall@1. Values within
-\(10^{-6}\) are tied. Resolve ties lexicographically using validation Recall@2,
-then Recall@4, then Recall@8, each with tolerance \(10^{-6}\). If still tied,
-prefer fewer trainable parameters; if complexity is also tied, use the fixed
-order M1, M2, M3, M4.
+Select the pipeline lexicographically by integer validation counts: highest
+Hits@1, then Hits@2, Hits@4, and Hits@8. If all hit counts tie, prefer fewer
+total optimized parameters; if complexity also ties, use the fixed order M1,
+M2, M3, M4. Recall values use the common 1,177-query denominator for reporting
+and are not compared with a floating-point tolerance.
 
 Do not replace this rule after observing results. Recall@2/4/8 are secondary
 tie breakers, not a composite score, and test performance never participates
@@ -83,7 +83,8 @@ are not required.
 3. Train/select M3 only on development fit/validation data.
 4. Train/select M4 only on development fit/validation data.
 5. Apply the winner rule and write the immutable selection lock.
-6. Open final test once, evaluate all locked pipelines for reporting, and
-   verify M1 against E1-R0.
+6. Open final test once and evaluate M1--M4 for the complete comparison table;
+   verify M1 against E1-R0. Test results cannot change the validation-selected
+   winner.
 7. Export the winning representation and Top-100 artifacts to E2B without
    changing the winning pipeline after test inspection.

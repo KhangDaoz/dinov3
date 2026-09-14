@@ -33,7 +33,6 @@ evaluation:
   ranking_depth: 100
   self_match_exclusion: true
   tie_policy: stable_gallery_index
-  winner_tolerance: 0.000001
 
 cache:
   path: outputs/e2a_cls/cache/dinov3_cls.pt
@@ -45,4 +44,3 @@ cache:
 output:
   root: outputs/e2a_cls/m1
   selection_lock: outputs/e2a_selection/selection_lock.json
-

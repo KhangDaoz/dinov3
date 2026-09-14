@@ -3,6 +3,8 @@
 from .dinov3 import DINOv3Backbone, DINOv3Tokens
 from .evidential import EvidentialHead, EvidentialOutput
 from .representations import (
+    AttentionPatchPooling,
+    AttentionPoolingOutput,
     CLSMeanPatchProjection,
     CLSRepresentation,
     MeanPatchRepresentation,
@@ -16,4 +18,6 @@ __all__ = [
     "CLSRepresentation",
     "MeanPatchRepresentation",
     "CLSMeanPatchProjection",
+    "AttentionPatchPooling",
+    "AttentionPoolingOutput",
 ]

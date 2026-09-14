@@ -67,10 +67,11 @@ prespecified winner rule, write an immutable selection-lock artifact, and only
 then run or reveal the final-test comparison once. E1-R0 is checked against M1
 only in this final-test stage.
 
-The winner is the pipeline with the highest validation Recall@1. Treat values
-within \(10^{-6}\) as tied, then compare Recall@2, Recall@4, and Recall@8 in
-that order using the same tolerance. If all four metrics remain tied, prefer
-fewer trainable parameters; if still tied, use the fixed order M1, M2, M3, M4.
+Select the winner lexicographically by integer validation Hits@1, Hits@2,
+Hits@4, and Hits@8. If all hit counts tie, prefer fewer total optimized
+parameters; if still tied, use the fixed order M1, M2, M3, M4. Recall values
+share the same 1,177-query denominator and are reported rather than compared
+with a floating-point tolerance.
 
 ## 4. Reuse and required refactoring
 
@@ -257,6 +258,6 @@ the same baseline. Do not declare M1 the best E2A representation at this stage.
 
 After M1 acceptance, freeze its config, split IDs, cache/manifest hashes,
 evaluation code, and validation metrics. M2--M4 must reuse these exact
-controls. Select the final E2A winner by highest validation Recall@1 and apply
-the prespecified Recall@2, Recall@4, Recall@8, model-complexity, and fixed-order
-tie rule before opening test or handing its representation to E2B.
+controls. Select the final E2A winner with the registered integer Hits@K,
+total-optimized-parameter, and fixed-order rule before opening test or handing
+its representation to E2B.

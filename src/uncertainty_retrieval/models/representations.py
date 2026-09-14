@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import torch
 from torch import Tensor, nn
 
@@ -75,3 +77,47 @@ class CLSMeanPatchProjection(nn.Module):
             raise ValueError("M3 inputs contain NaN or Inf")
         fused = torch.cat((cls.float(), mean_patch.float()), dim=1)
         return self.projection(fused)
+
+
+@dataclass(frozen=True)
+class AttentionPoolingOutput:
+    embedding: Tensor
+    weights: Tensor
+
+
+class AttentionPatchPooling(nn.Module):
+    """M4 content-dependent weighting over final-layer patch tokens."""
+
+    def __init__(
+        self,
+        embedding_dim: int = 768,
+        hidden_dim: int = 256,
+        patch_tokens: int = 196,
+    ) -> None:
+        super().__init__()
+        if min(embedding_dim, hidden_dim, patch_tokens) <= 0:
+            raise ValueError("Attention dimensions must be positive")
+        self.embedding_dim = embedding_dim
+        self.patch_tokens = patch_tokens
+        self.hidden = nn.Linear(embedding_dim, hidden_dim)
+        self.score = nn.Linear(hidden_dim, 1)
+        nn.init.xavier_uniform_(self.hidden.weight)
+        nn.init.xavier_uniform_(self.score.weight)
+        nn.init.zeros_(self.hidden.bias)
+        nn.init.zeros_(self.score.bias)
+
+    def forward(self, patches: Tensor) -> AttentionPoolingOutput:
+        expected = (self.patch_tokens, self.embedding_dim)
+        if patches.ndim != 3 or tuple(patches.shape[1:]) != expected:
+            raise ValueError(
+                f"Patch input must have shape [batch, {expected[0]}, {expected[1]}]"
+            )
+        patches = patches.float()
+        if not torch.isfinite(patches).all():
+            raise ValueError("Attention input contains NaN or Inf")
+        logits = self.score(torch.tanh(self.hidden(patches))).squeeze(-1)
+        weights = torch.softmax(logits.float(), dim=1)
+        embedding = torch.sum(weights.unsqueeze(-1) * patches, dim=1)
+        if not torch.isfinite(embedding).all():
+            raise FloatingPointError("Attention embedding is not finite")
+        return AttentionPoolingOutput(embedding, weights)
