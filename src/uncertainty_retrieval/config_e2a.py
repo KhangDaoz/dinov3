@@ -26,6 +26,7 @@ class E2AModelConfig:
     revision: str = "5931719e67bbdb9737e363e781fb0c67687896bc"
     embedding_dim: int = 768
     register_tokens: int = 4
+    expected_patch_tokens: int = 196
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,9 @@ class E2AEvaluationConfig:
     self_match_exclusion: bool = True
     tie_policy: str = "stable_gallery_index"
     winner_tolerance: float = 1.0e-6
+    reference_validation_ids: str = (
+        "outputs/e2a_cls/m1/split/validation_image_ids.pt"
+    )
 
 
 @dataclass(frozen=True)
@@ -64,6 +68,7 @@ class E2ACacheConfig:
     )
     schema_version: int = 2
     materialize_embeddings: bool = False
+    reference_manifest: str | None = None
 
 
 @dataclass(frozen=True)
@@ -114,7 +119,7 @@ def _construct(cls: type[T], values: dict[str, Any], path: str) -> T:
 
 
 def validate_e2a_config(config: E2AConfig) -> None:
-    """Reject settings that would change the M1 treatment or protocol."""
+    """Reject settings that would change an E2A treatment or protocol."""
     dataset = config.dataset
     if not 0.0 < dataset.validation_fraction < 1.0:
         raise ValueError("validation_fraction must be in (0, 1)")
@@ -127,12 +132,19 @@ def validate_e2a_config(config: E2AConfig) -> None:
         or dataset.expected_test_images != 5924
     ):
         raise ValueError("E2A requires the fixed CUB image counts")
-    if config.model.embedding_dim != 768 or config.model.register_tokens != 4:
-        raise ValueError("M1 requires DINOv3 ViT-B/16 dimensions")
+    if (
+        config.model.embedding_dim != 768
+        or config.model.register_tokens != 4
+        or config.model.expected_patch_tokens != 196
+    ):
+        raise ValueError("E2A requires DINOv3 ViT-B/16 token dimensions")
     if not config.model.revision or config.model.revision == "main":
         raise ValueError("model.revision must be an immutable revision")
     representation = config.representation
-    expected = ("m1", "cls", "final", "none", "l2")
+    contracts = {
+        "m1": ("m1", "cls", "final", "none", "l2"),
+        "m2": ("m2", "mean_patch", "final", "mean", "l2"),
+    }
     actual = (
         representation.method,
         representation.name,
@@ -140,8 +152,12 @@ def validate_e2a_config(config: E2AConfig) -> None:
         representation.pooling,
         representation.normalization,
     )
-    if actual != expected:
-        raise ValueError(f"Invalid M1 representation contract: {actual}")
+    expected = contracts.get(representation.method)
+    if expected is None or actual != expected:
+        raise ValueError(
+            f"Invalid {representation.method.upper()} representation contract: "
+            f"{actual}"
+        )
     runtime = config.runtime
     if runtime.batch_size <= 0 or runtime.similarity_chunk_size <= 0:
         raise ValueError("Runtime batch and chunk sizes must be positive")
@@ -166,6 +182,11 @@ def validate_e2a_config(config: E2AConfig) -> None:
         raise ValueError("winner_tolerance must be positive")
     if config.cache.schema_version <= 0:
         raise ValueError("cache.schema_version must be positive")
+    if representation.method == "m2":
+        if config.cache.reuse_candidates:
+            raise ValueError("M2 cannot reuse CLS cache candidates")
+        if not config.cache.reference_manifest:
+            raise ValueError("M2 requires the accepted M1 embedding manifest")
 
 
 def load_e2a_config(path: str | Path) -> E2AConfig:
@@ -183,4 +204,3 @@ def save_e2a_config(config: E2AConfig, path: str | Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     with destination.open("w", encoding="utf-8") as stream:
         yaml.safe_dump(asdict(config), stream, sort_keys=False)
-

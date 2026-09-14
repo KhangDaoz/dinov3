@@ -28,3 +28,26 @@ class CLSRepresentation(nn.Module):
             raise ValueError("CLS features contain NaN or Inf")
         return features.float()
 
+
+class MeanPatchRepresentation(nn.Module):
+    """M2: average final patch tokens, excluding CLS and registers."""
+
+    def __init__(self, embedding_dim: int = 768, patch_tokens: int = 196) -> None:
+        super().__init__()
+        if embedding_dim <= 0 or patch_tokens <= 0:
+            raise ValueError("embedding_dim and patch_tokens must be positive")
+        self.embedding_dim = embedding_dim
+        self.patch_tokens = patch_tokens
+
+    def forward(self, tokens: DINOv3Tokens) -> Tensor:
+        patches = tokens.patches
+        expected = (self.patch_tokens, self.embedding_dim)
+        if patches.ndim != 3 or tuple(patches.shape[1:]) != expected:
+            raise ValueError(
+                "Patch tokens must have shape "
+                f"[batch, {self.patch_tokens}, {self.embedding_dim}], "
+                f"got {tuple(patches.shape)}"
+            )
+        if not torch.isfinite(patches).all():
+            raise ValueError("Patch features contain NaN or Inf")
+        return patches.float().mean(dim=1)

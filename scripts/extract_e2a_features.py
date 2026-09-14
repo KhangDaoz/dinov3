@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Extract provenance-complete frozen DINOv3 features for E2A-M1."""
+"""Extract provenance-complete frozen DINOv3 features for E2A."""
 
 from __future__ import annotations
 
@@ -14,7 +14,10 @@ from uncertainty_retrieval.data.cub import CUBDataset, load_cub_records, validat
 from uncertainty_retrieval.data.feature_cache import cub_manifest_hash
 from uncertainty_retrieval.data.patch_cache import load_feature_cache, save_feature_cache
 from uncertainty_retrieval.models.dinov3 import DINOv3Backbone, processor_transform
-from uncertainty_retrieval.models.representations import CLSRepresentation
+from uncertainty_retrieval.models.representations import (
+    CLSRepresentation,
+    MeanPatchRepresentation,
+)
 from uncertainty_retrieval.utils import distributed_barrier, initialize_distributed, seed_everything
 
 
@@ -31,6 +34,17 @@ def _processor_settings(processor: object) -> dict:
     if not isinstance(settings, dict):
         raise TypeError("Processor settings must be a mapping")
     return settings
+
+
+def _build_representation(config):
+    if config.representation.method == "m1":
+        return CLSRepresentation(config.model.embedding_dim)
+    if config.representation.method == "m2":
+        return MeanPatchRepresentation(
+            config.model.embedding_dim,
+            config.model.expected_patch_tokens,
+        )
+    raise ValueError(f"Unsupported E2A method: {config.representation.method}")
 
 
 def main() -> None:
@@ -58,7 +72,7 @@ def main() -> None:
         config.model.register_tokens,
     )
     backbone.to(device)
-    representation = CLSRepresentation(config.model.embedding_dim).to(device)
+    representation = _build_representation(config).to(device)
     dataset = CUBDataset(config.dataset.root, records, processor_transform(processor))
     sampler = DistributedSampler(dataset, shuffle=False)
     loader_kwargs = {
@@ -85,7 +99,9 @@ def main() -> None:
             enabled=config.runtime.amp and device.type == "cuda",
             dtype=torch.float16,
         ):
-            embedding = representation(backbone(pixels))
+            tokens = backbone(pixels)
+        # Representation aggregation is FP32 even when backbone AMP is active.
+        embedding = representation(tokens)
         features.append(embedding.cpu())
         image_ids.extend(batch["image_id"].tolist())
         labels.extend(batch["label"].tolist())
@@ -100,12 +116,18 @@ def main() -> None:
         "model_id": config.model.model_id,
         "requested_revision": config.model.revision,
         "resolved_revision": resolved or config.model.revision,
-        "token": "cls",
+        "token": "cls" if config.representation.method == "m1" else "patch",
         "source_layer": "final",
         "register_tokens": config.model.register_tokens,
         "processor_settings": _processor_settings(processor),
         "cub_manifest_hash": cub_manifest_hash(config.dataset.root),
     }
+    if config.representation.method == "m2":
+        metadata.update(
+            pooling="mean",
+            patch_tokens=config.model.expected_patch_tokens,
+            embedding_dim=config.model.embedding_dim,
+        )
     save_feature_cache(
         {
             "schema_version": config.cache.schema_version,

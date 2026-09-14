@@ -14,7 +14,7 @@ from uncertainty_retrieval.config_e2a import load_e2a_config, save_e2a_config
 from uncertainty_retrieval.data.cub import load_cub_records, split_development_records, validate_protocol_counts
 from uncertainty_retrieval.data.feature_cache import (
     cub_manifest_hash,
-    find_reusable_m1_cache,
+    find_reusable_feature_cache,
     validation_ids_hash,
     write_embedding_manifest,
 )
@@ -41,7 +41,9 @@ def main() -> None:
     if args.stage == "test":
         lock = verify_selection_lock(config.output.selection_lock)
         if lock["winner"] != config.representation.method:
-            raise PermissionError("M1 is not the locked E2A winner")
+            raise PermissionError(
+                f"{config.representation.method.upper()} is not the locked E2A winner"
+            )
 
     records = load_cub_records(
         config.dataset.root,
@@ -53,14 +55,31 @@ def main() -> None:
         config.dataset.expected_development_images,
         config.dataset.expected_test_images,
     )
-    cache_path, diagnostics = find_reusable_m1_cache(config, records)
+    cache_path, diagnostics = find_reusable_feature_cache(config, records)
     if cache_path is None:
-        raise FileNotFoundError(f"No compatible M1 cache: {diagnostics}")
+        raise FileNotFoundError(
+            f"No compatible {config.representation.method.upper()} cache: "
+            f"{diagnostics}"
+        )
     payload = load_feature_cache(cache_path)
     by_id = {int(value): index for index, value in enumerate(payload["image_ids"])}
     _, validation = split_development_records(
         records, config.dataset.validation_fraction, config.dataset.split_seed
     )
+    if config.representation.method == "m2":
+        reference_path = Path(config.evaluation.reference_validation_ids)
+        if not reference_path.is_file():
+            raise FileNotFoundError(
+                "Accepted M1 validation IDs are required before M2 evaluation"
+            )
+        reference_ids = torch.load(
+            reference_path, map_location="cpu", weights_only=True
+        )
+        current_ids = torch.tensor(
+            [record.image_id for record in validation], dtype=torch.long
+        )
+        if not torch.equal(reference_ids, current_ids):
+            raise ValueError("M2 validation IDs differ from accepted M1")
     selected = validation if args.stage == "validation" else [
         record for record in records if record.split == "test"
     ]
@@ -85,7 +104,7 @@ def main() -> None:
     write_json(metrics, root / "metrics" / f"{args.stage}.json")
     write_embedding_manifest(cache_path, config, root / "embeddings" / "manifest.json")
     metadata = {
-        "method": "m1",
+        "method": config.representation.method,
         "stage": args.stage,
         "query_count": len(selected),
         "trainable_parameters": 0,

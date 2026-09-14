@@ -1,11 +1,16 @@
 from dataclasses import replace
+import json
 
 import pytest
 import torch
 
-from uncertainty_retrieval.config_e2a import E2AConfig
+from uncertainty_retrieval.config_e2a import E2AConfig, RepresentationConfig
 from uncertainty_retrieval.data.cub import CUBRecord
-from uncertainty_retrieval.data.feature_cache import validate_m1_cache, validation_ids_hash
+from uncertainty_retrieval.data.feature_cache import (
+    validate_m1_cache,
+    validate_representation_cache,
+    validation_ids_hash,
+)
 
 
 def _fixture() -> tuple[dict, list[CUBRecord], E2AConfig]:
@@ -63,3 +68,34 @@ def test_m1_cache_rejects_invalid_content(fault: str) -> None:
 
 def test_validation_hash_is_order_independent() -> None:
     assert validation_ids_hash([3, 1, 2]) == validation_ids_hash([1, 2, 3])
+
+
+def test_m2_cache_accepts_mean_patch_and_rejects_cls_cross_use(tmp_path) -> None:
+    payload, records, config = _fixture()
+    config = replace(
+        config,
+        representation=RepresentationConfig(
+            method="m2",
+            name="mean_patch",
+            source_layer="final",
+            pooling="mean",
+            normalization="l2",
+        ),
+    )
+    with pytest.raises(ValueError, match="provenance missing"):
+        validate_representation_cache(payload, records, config, "manifest")
+    payload["metadata"].update(
+        token="patch",
+        pooling="mean",
+        patch_tokens=config.model.expected_patch_tokens,
+        embedding_dim=config.model.embedding_dim,
+    )
+    reference = tmp_path / "m1_manifest.json"
+    reference.write_text(
+        json.dumps({"metadata": payload["metadata"]}), encoding="utf-8"
+    )
+    config = replace(
+        config,
+        cache=replace(config.cache, reference_manifest=str(reference)),
+    )
+    validate_representation_cache(payload, records, config, "manifest")

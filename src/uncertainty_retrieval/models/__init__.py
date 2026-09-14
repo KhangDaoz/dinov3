@@ -2,7 +2,7 @@
 
 from .dinov3 import DINOv3Backbone, DINOv3Tokens
 from .evidential import EvidentialHead, EvidentialOutput
-from .representations import CLSRepresentation
+from .representations import CLSRepresentation, MeanPatchRepresentation
 
 __all__ = [
     "DINOv3Backbone",
@@ -10,4 +10,5 @@ __all__ = [
     "EvidentialHead",
     "EvidentialOutput",
     "CLSRepresentation",
+    "MeanPatchRepresentation",
 ]

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from uncertainty_retrieval.config_e2a import load_e2a_config
 from uncertainty_retrieval.data.cub import load_cub_records
-from uncertainty_retrieval.data.feature_cache import find_reusable_m1_cache
+from uncertainty_retrieval.data.feature_cache import find_reusable_feature_cache
 from uncertainty_retrieval.evaluation.representation import verify_selection_lock
 
 
@@ -24,7 +24,9 @@ def main() -> None:
     if args.stage == "test":
         lock = verify_selection_lock(config.output.selection_lock)
         if lock["winner"] != config.representation.method:
-            raise PermissionError("M1 is not the locked E2A winner")
+            raise PermissionError(
+                f"{config.representation.method.upper()} is not the locked E2A winner"
+            )
 
     os.environ.setdefault("OMP_NUM_THREADS", str(max(1, (os.cpu_count() or 2) // 2)))
     kernel_cache = Path("/tmp/uncertainty_retrieval_torch_kernels")
@@ -35,9 +37,12 @@ def main() -> None:
         config.dataset.development_classes,
         config.dataset.total_classes,
     )
-    cache_path, diagnostics = find_reusable_m1_cache(config, records)
+    cache_path, diagnostics = find_reusable_feature_cache(config, records)
     if cache_path is None:
-        print(f"No reusable M1 cache; extracting ({diagnostics})")
+        print(
+            f"No reusable {config.representation.method.upper()} cache; "
+            f"extracting ({diagnostics})"
+        )
         subprocess.run(
             [
                 "torchrun", "--standalone",
