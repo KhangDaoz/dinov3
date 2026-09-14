@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -153,8 +154,11 @@ def main() -> None:
     environment_path = root / "environment.json"
     evaluation_environment = environment_metadata(sys.argv)
     if config.representation.method == "m3" and environment_path.is_file():
-        training_environment = json.loads(
+        existing_environment = json.loads(
             environment_path.read_text(encoding="utf-8")
+        )
+        training_environment = existing_environment.get(
+            "training", existing_environment
         )
         write_json(
             {
@@ -239,7 +243,16 @@ def main() -> None:
         "method": config.representation.method,
         "stage": args.stage,
         "query_count": len(selected),
-        "trainable_parameters": 0,
+        "trainable_parameters": (
+            checkpoint["provenance"]["total_trainable_parameters"]
+            if config.representation.method == "m3"
+            else 0
+        ),
+        "deployable_parameters": (
+            checkpoint["provenance"]["deployable_parameters"]
+            if config.representation.method == "m3"
+            else 0
+        ),
         "cache_diagnostics": diagnostics,
         "cub_manifest_hash": cub_manifest_hash(config.dataset.root),
         "wall_time_seconds": time.perf_counter() - started,
