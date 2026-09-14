@@ -114,7 +114,8 @@ def main() -> None:
         seed=seed,
     )
     seed_root = Path(config.output.root) / f"seed_{seed}"
-    output_root = seed_root / args.stage
+    stage_directory = "tuning" if args.stage == "tune" else "final"
+    output_root = seed_root / stage_directory
     checkpoint = output_root / "checkpoints" / "best.pt"
     model = EvidentialHead(
         config.model.embedding_dim,
