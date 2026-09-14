@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import statistics
 import subprocess
 import sys
@@ -21,6 +22,13 @@ def main() -> None:
     parser.add_argument("--test", action="store_true")
     args = parser.parse_args()
     config = load_config(args.config)
+    os.environ.setdefault(
+        "OMP_NUM_THREADS",
+        str(max(1, (os.cpu_count() or 2) // 2)),
+    )
+    kernel_cache = Path("/tmp/uncertainty_retrieval_torch_kernels")
+    kernel_cache.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR", str(kernel_cache))
     base = [sys.executable]
     config_args = ["--config", str(args.config)]
     subprocess.run(

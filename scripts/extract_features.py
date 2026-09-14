@@ -20,7 +20,11 @@ from uncertainty_retrieval.models.dinov3 import (
     DINOv3Backbone,
     processor_transform,
 )
-from uncertainty_retrieval.utils import initialize_distributed, seed_everything
+from uncertainty_retrieval.utils import (
+    distributed_barrier,
+    initialize_distributed,
+    seed_everything,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -114,8 +118,7 @@ def main() -> None:
         },
         shard_path,
     )
-    if torch.distributed.is_initialized():
-        torch.distributed.barrier()
+    distributed_barrier(device)
     if rank == 0:
         from uncertainty_retrieval.data.patch_cache import load_feature_cache
 
@@ -150,8 +153,7 @@ def main() -> None:
         )
         for index in range(world_size):
             cache_path.with_suffix(f".rank{index}.pt").unlink()
-    if torch.distributed.is_initialized():
-        torch.distributed.barrier()
+    distributed_barrier(device)
 
 
 if __name__ == "__main__":

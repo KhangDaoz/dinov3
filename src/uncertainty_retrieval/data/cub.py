@@ -108,7 +108,9 @@ def validate_protocol_counts(
         "test": expected_test,
     }
     if counts != expected:
-        raise ValueError(f"CUB protocol count mismatch: got {counts}, expected {expected}")
+        raise ValueError(
+            f"CUB protocol count mismatch: got {counts}, expected {expected}"
+        )
 
 
 class CUBDataset(Dataset):

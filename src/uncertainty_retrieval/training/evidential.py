@@ -15,6 +15,7 @@ from uncertainty_retrieval.models.evidential import (
     EvidentialHead,
     edl_mse_loss,
 )
+from uncertainty_retrieval.utils import distributed_barrier
 
 
 class FeatureDataset(Dataset):
@@ -86,8 +87,7 @@ def train_evidential_fixed_epochs(
             {"model": model.state_dict(), "epoch": epochs},
             checkpoint,
         )
-    if torch.distributed.is_initialized():
-        torch.distributed.barrier()
+    distributed_barrier(device)
     return history
 
 
@@ -238,8 +238,7 @@ def train_evidential_head(
                     },
                     checkpoint,
                 )
-        if torch.distributed.is_initialized():
-            torch.distributed.barrier()
+        distributed_barrier(device)
     return TrainingResult(best_epoch, best_loss, history)
 
 

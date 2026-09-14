@@ -26,6 +26,7 @@ from uncertainty_retrieval.training.evidential import (
 )
 from uncertainty_retrieval.utils import (
     environment_metadata,
+    distributed_barrier,
     initialize_distributed,
     seed_everything,
     write_json,
@@ -227,8 +228,7 @@ def main() -> None:
             environment_metadata(),
             output_root / "environment.json",
         )
-    if torch.distributed.is_initialized():
-        torch.distributed.barrier()
+    distributed_barrier(device)
 
 
 if __name__ == "__main__":
