@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import cmp_to_key
+import math
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,23 @@ from .retrieval import cosine_rankings, recall_at_k
 METHOD_ORDER = ("m1", "m2", "m3", "m4")
 METRIC_ORDER = ("recall_at_1", "recall_at_2", "recall_at_4", "recall_at_8")
 HIT_ORDER = ("hits_at_1", "hits_at_2", "hits_at_4", "hits_at_8")
+
+
+def validate_recall_against_hits(recall: float, hits: int, query_count: int) -> None:
+    """Accept FP32 reporting round-off, but reject inconsistent Recall artifacts."""
+    if query_count <= 0 or not 0 <= hits <= query_count:
+        raise ValueError("Invalid hit count or query count")
+    expected = hits / query_count
+    # Evaluator reports a torch.float32 mean; Python division uses float64.
+    # This tolerance is only for artifact integrity, never for winner selection.
+    tolerance = torch.finfo(torch.float32).eps
+    if not math.isfinite(recall) or not 0 <= recall <= 1:
+        raise ValueError("Recall must be finite and in [0, 1]")
+    if abs(recall - expected) > tolerance:
+        raise ValueError(
+            f"Recall {recall:.17g} disagrees with ranking: "
+            f"{hits}/{query_count} = {expected:.17g} (tolerance {tolerance:.3g})"
+        )
 
 
 def evaluate_top100(

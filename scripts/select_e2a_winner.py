@@ -15,6 +15,7 @@ from uncertainty_retrieval.evaluation.representation import (
     METHOD_ORDER,
     hits_from_ranking,
     select_representation_winner,
+    validate_recall_against_hits,
 )
 from uncertainty_retrieval.utils import write_json
 
@@ -54,9 +55,14 @@ def main() -> None:
         hits[method] = hits_from_ranking(ranking)
         metrics[method] = json.loads(metrics_path.read_text(encoding="utf-8"))
         for k in (1, 2, 4, 8):
-            expected = hits[method][f"hits_at_{k}"] / len(ids)
-            if abs(metrics[method][f"recall_at_{k}"] - expected) > 1e-12:
-                raise ValueError(f"{method.upper()} Recall@{k} disagrees with ranking")
+            try:
+                validate_recall_against_hits(
+                    metrics[method][f"recall_at_{k}"],
+                    hits[method][f"hits_at_{k}"],
+                    len(ids),
+                )
+            except ValueError as error:
+                raise ValueError(f"{method.upper()} Recall@{k}: {error}") from error
         if method in {"m1", "m2"}:
             parameters[method] = 0
         else:
