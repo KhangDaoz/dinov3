@@ -75,7 +75,9 @@ def main() -> None:
     expected = {
         "config_sha256": sha256_file(args.config),
         "patch_manifest_sha256": sha256_file(config.cache.patch_manifest),
-        "split_hash": validation_ids_hash(validation_ids.tolist()),
+        # Checkpoint provenance always refers to its development validation split,
+        # even when the selected evaluation records belong to the test split.
+        "split_hash": validation_ids_hash([record.image_id for record in validation]),
     }
     for key, value in expected.items():
         if checkpoint["provenance"].get(key) != value:
