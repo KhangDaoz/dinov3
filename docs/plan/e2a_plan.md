@@ -98,3 +98,11 @@ python scripts/run_e2a_test_selection.py --configs \
 The command evaluates every method, saves each `metrics/test.json` and
 `rankings/test_top100.pt`, verifies common test IDs and recomputed integer
 Hits@K, then writes `outputs/e2a_selection/test_selection.json`.
+
+The runner also copies required test metrics, rankings, learned embeddings,
+M4 diagnostics, and configuration into `outputs/e2a_selection/artifacts/m1/`
+through `m4/`. Downloading or zipping `e2a_selection` therefore includes the
+test evidence, not just the summary. Add `--export-only` to bundle existing
+test outputs without rerunning evaluation. Missing required files stop export
+with their exact paths. Backbone caches remain in their original directories
+and are not duplicated in this portable evaluation bundle.
