@@ -39,6 +39,22 @@ final_score = lambda * cosine_similarity + (1 - lambda) * pair_confidence
 
 Cần khảo sát nhiều giá trị `lambda` và ablation riêng cosine similarity, pair confidence, cùng phép fusion.
 
+E2B đã có runner: xem [kế hoạch triển khai](docs/plan/e2b_plan.md).
+Representation được cố định là E2A-M1; static hard negatives được mine một
+lần từ cosine trên fit set. Validation chọn checkpoint/lambda, test chỉ
+inference. Classes 100–199 đã dùng để chọn representation ở E2A, nên kết
+quả E2B trên tập này không phải final test độc lập.
+
+```bash
+python scripts/run_e2b.py --config configs/<config_name>.yaml --stage validation
+python scripts/run_e2b.py --config configs/<config_name>.yaml --stage test
+```
+
+Config E2B mặc định tạo lại các EDL comparison heads trên accepted M1 cache
+để tránh ghép score từ cache E1 cũ không đồng nhất. Kết quả portable lưu tại
+`outputs/e2b_pair_confidence/seed_42/export/`, gồm checkpoint, scores,
+rankings, metrics và failure cases; không chỉ có JSON tổng hợp.
+
 ## Dữ liệu và protocol đánh giá
 
 Đặt CUB-200-2011 tại `data/CUB_200_2011/`, giữ thư mục `images/` và các manifest gốc như `images.txt`, `image_class_labels.txt`.

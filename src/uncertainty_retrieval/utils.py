@@ -130,7 +130,9 @@ def environment_metadata(command: list[str] | None = None) -> dict[str, Any]:
     return {
         "python": platform.python_version(),
         "platform": platform.platform(),
-        "torch": torch.__version__,
+        # TorchVersion is a str subclass that weights_only checkpoint loading
+        # rejects; persist a plain string in all provenance artifacts.
+        "torch": str(torch.__version__),
         "cuda": torch.version.cuda,
         "cudnn": torch.backends.cudnn.version(),
         "gpu_names": gpu_names,
