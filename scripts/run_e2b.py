@@ -16,14 +16,24 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--stage", choices=("validation", "test"), required=True)
+    parser.add_argument("--evaluate-only", action="store_true",
+                        help="Reuse trained heads and static pools; do not train again")
     args = parser.parse_args()
     config_path = args.config.resolve()
     config = load_e2b_config(config_path)
+    output = Path(config.output_root)
+    if not output.is_absolute():
+        output = REPOSITORY / output
+    if args.stage == "test" and not (output / "selection.json").is_file():
+        raise FileNotFoundError(
+            f"Missing {output / 'selection.json'}. Complete validation evaluation "
+            "first with --stage validation --evaluate-only; no retraining is needed."
+        )
     os.environ.setdefault("OMP_NUM_THREADS", "2")
     launch = [sys.executable, "-m", "torch.distributed.run", "--standalone",
               f"--nproc-per-node={config.runtime.world_size}"]
-    scripts = ["prepare_e2b_pairs.py", "train_e2b.py"] if args.stage == "validation" else []
-    if args.stage == "validation" and config.controls.enabled and config.controls.source == "controlled_retrain":
+    scripts = ["prepare_e2b_pairs.py", "train_e2b.py"] if args.stage == "validation" and not args.evaluate_only else []
+    if args.stage == "validation" and not args.evaluate_only and config.controls.enabled and config.controls.source == "controlled_retrain":
         scripts.insert(1, "prepare_e2b_controls.py")
     scripts.append("evaluate_e2b.py")
     for script in scripts:

@@ -3,6 +3,7 @@
 from dataclasses import replace
 
 import torch
+import pytest
 
 from uncertainty_retrieval.config_e2b import E2BConfig
 from uncertainty_retrieval.data.feature_cache import sha256_file
@@ -13,12 +14,13 @@ from uncertainty_retrieval.training.representation import atomic_torch_save
 from uncertainty_retrieval.utils import write_json
 
 
-def test_synthetic_validation_then_frozen_test_exports_complete_bundle(tmp_path, monkeypatch):
+@pytest.mark.parametrize("controls_enabled", [False, True])
+def test_synthetic_validation_then_frozen_test_exports_complete_bundle(tmp_path, monkeypatch, controls_enabled):
     torch.manual_seed(42)
     config = E2BConfig()
     config = replace(config, output_root=str(tmp_path),
                      runtime=replace(config.runtime, world_size=1, device="cpu"),
-                     controls=replace(config.controls, enabled=False),
+                     controls=replace(config.controls, enabled=controls_enabled),
                      inputs=replace(config.inputs, selection=str(tmp_path / "e2a.json")))
     n = 101
     ids = torch.arange(1000, 1000+n)
@@ -44,6 +46,24 @@ def test_synthetic_validation_then_frozen_test_exports_complete_bundle(tmp_path,
     monkeypatch.setattr(pipeline,"load_pair_inputs",lambda *args: (view,dict(provenance)))
     monkeypatch.setattr(pipeline,"setup",lambda config: (0,1,torch.device("cpu")))
     monkeypatch.setattr(pipeline,"PairConfidenceNetwork",lambda: PairConfidenceNetwork(2))
+    cleanup_calls = []
+    monkeypatch.setattr(pipeline, "cleanup_distributed", lambda: cleanup_calls.append(True))
+    original_export = pipeline.export_e2b
+
+    def checked_export(root, split):
+        assert cleanup_calls, "Process group must close before rank-0 export"
+        original_export(root, split)
+
+    monkeypatch.setattr(pipeline, "export_e2b", checked_export)
+    if controls_enabled:
+        alpha = 1 + torch.rand(n, 100)
+        uncertainty = 100 / alpha.sum(1)
+        monkeypatch.setattr(pipeline, "load_e1_control", lambda *args: (
+            alpha, uncertainty, {"source": "synthetic_fixture"}
+        ))
+        for name in ("controls/edl/tuning/uncertainty/validation.pt",
+                     "controls/edl/final/best.pt"):
+            atomic_torch_save({}, tmp_path / name)
     pipeline.evaluate(tmp_path / "config.yaml","validation")
     before = sha256_file(tmp_path / "checkpoints/best.pt")
     pipeline.evaluate(tmp_path / "config.yaml","test")
@@ -52,3 +72,6 @@ def test_synthetic_validation_then_frozen_test_exports_complete_bundle(tmp_path,
                  "failure_cases/test.json","rankings/test_fusion.pt","selection.json","report.tex",
                  "figures/test_candidate_calibration.svg"):
         assert (tmp_path / "export" / name).is_file()
+    if controls_enabled:
+        for name in ("controls/test_U1.pt", "controls/test_A1.pt", "controls/test_A2.pt"):
+            assert (tmp_path / "export" / name).is_file()

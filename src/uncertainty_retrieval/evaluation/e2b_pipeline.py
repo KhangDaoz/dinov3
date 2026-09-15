@@ -116,6 +116,10 @@ def evaluate(config_path: Path, split: str):
         shards = root / "scores/shards"
         atomic_torch_save(shard, shards / f"{split}_rank{rank}.pt")
         distributed_barrier(device)
+        # Distributed scoring is finished. Tear down on ALL ranks before
+        # rank-0-only sorting/report/export: peers must not sit in an NCCL
+        # barrier if postprocessing raises or takes longer than its timeout.
+        cleanup_distributed()
         if rank == 0:
             merged = merge_shards(shards, split, world, fields)
             confidence = merged["logits"].sigmoid()
@@ -136,7 +140,7 @@ def evaluate(config_path: Path, split: str):
                 if uncertainty is not None:
                     u_grid = {}
                     for n in config.evaluation.uncertainty_top_n:
-                        u_order = uncertainty[candidates[:, :n]].argsort(1, stable=True)
+                        u_order = uncertainty[candidates[:, :n]].argsort(dim=1, stable=True)
                         reranked = candidates.clone()
                         reranked[:, :n] = candidates[:, :n].gather(1, u_order)
                         u_grid[str(n)] = ranking_metrics(reranked, labels)
@@ -199,7 +203,7 @@ def evaluate(config_path: Path, split: str):
                 if n not in config.evaluation.uncertainty_top_n:
                     raise ValueError("Missing validation-selected U1 budget")
                 u_indices = candidates.clone()
-                u_indices[:,:n] = candidates[:,:n].gather(1, uncertainty[candidates[:,:n]].argsort(1, stable=True))
+                u_indices[:,:n] = candidates[:,:n].gather(1, uncertainty[candidates[:,:n]].argsort(dim=1, stable=True))
                 metric_table.update(U1=ranking_metrics(u_indices,labels),
                                     A1=ranking_metrics(merged["a1_indices"],labels),
                                     A2=ranking_metrics(merged["a2_indices"],labels))
@@ -262,6 +266,5 @@ def evaluate(config_path: Path, split: str):
             write_json(environment_metadata(sys.argv), root / "metrics" / f"{split}_environment.json")
             export_e2b(root, split)
             print(f"{split}: lambda={coefficient}; fusion={metric_table['fusion']}",flush=True)
-        distributed_barrier(device)
     finally:
         cleanup_distributed()
