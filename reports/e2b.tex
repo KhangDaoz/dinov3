@@ -1,0 +1,231 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T5]{fontenc}
+\usepackage[vietnamese]{babel}
+\usepackage{lmodern}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage[hidelinks]{hyperref}
+\title{Báo cáo thực nghiệm E2B\\Pair-wise Confidence Learning trên Frozen DINOv3}
+\author{}
+\date{16 tháng 9 năm 2026}
+\begin{document}
+\maketitle
+
+\section{Tóm tắt}
+
+E2B kiểm tra hai mục tiêu riêng biệt: cải thiện thứ hạng truy xuất bằng
+pair-wise compatibility và đánh giá khả năng dự đoán một cặp ảnh đúng class.
+Trên benchmark 5,924 ảnh, fusion đạt Recall@1 = 88.0149\%, so với
+87.9980\% của M1 cosine: tăng đúng một query, hay 0.0169 điểm phần trăm.
+Khoảng bootstrap 95\% của chênh lệch chứa 0 ở mọi K được xét.
+\textbf{Chưa có bằng chứng cải thiện retrieval rõ rệt trong run này.}
+Pair-only và các evidential controls đều thấp hơn cosine baseline.
+
+Kết quả là \textbf{single-seed result (42)}, không phải mean $\pm$ std.
+Classes 100--199 đã được dùng để chọn M1 trong E2A; do đó đây là benchmark
+có inherited representation-selection bias, không phải final test độc lập.
+
+\section{Dữ liệu và đầu vào}
+
+CUB-200-2011 được chia theo class: development gồm 5,864 ảnh classes 0--99;
+benchmark gồm 5,924 ảnh unseen classes 100--199. Development dùng stratified
+image-level 80/20, seed 42: 4,687 fit và 1,177 validation. Không dùng official
+image-level split. Hai đầu của training pair chỉ thuộc fit; validation pair
+chỉ thuộc validation. Query và gallery trùng tập trong từng split; loại
+self-match bằng image ID, đánh giá Recall@1/2/4/8.
+
+Representation là final CLS 768 chiều của frozen DINOv3 ViT-B/16,
+\texttt{facebook/dinov3-vitb16-pretrain-lvd1689m}, revision
+\texttt{5931719e67bbdb9737e363e781fb0c67687896bc}; ảnh 224$\times$224.
+L2-normalize CLS trước cosine và pair inference. Không train backbone.
+Bundle M1 được E2B chấp nhận có Hits@1 = 5,213, khác số 5,214 trong
+báo cáo E2A trước đó. Mọi delta ở đây dùng \emph{baseline trong cùng bundle
+E2B}, không ghép baseline từ các lần chạy khác nhau.
+
+\section{Pair network và training}
+
+Với $q,x$ là normalized CLS, inference luôn giữ thứ tự query trước:
+\begin{align}
+ \ell(q,x)&=\operatorname{MLP}([q;x;|q-x|]),\\
+ C(q,x)&=\operatorname{sigmoid}(\ell(q,x)).
+\end{align}
+MLP có kích thước $2304\rightarrow512\rightarrow128\rightarrow1$, ReLU
+và dropout 0.1 sau hai hidden layers. Random swap xác suất 50\% chỉ là
+training augmentation; không dùng bidirectional averaging khi inference.
+
+Mỗi fit query có 16 positives cùng class, 8 hard negatives và 8 random
+negatives khác class mỗi epoch: 149,984 ordered pairs, tỷ lệ positive/negative
+1:1. Hard negatives được mine \textbf{static một lần} từ frozen M1 cosine
+Top-100 trên fit; không online update bằng learned score.
+Training dùng BCEWithLogitsLoss, AdamW, LR $10^{-4}$, weight decay $10^{-4}$,
+cosine scheduler, clipping 5.0, 30 epochs và global batch 4,096.
+Seed 42 thống nhất initialization, sampling và training; pair head dùng FP32,
+DDP một process mỗi T4. Giữ checkpoint fit-trained cho benchmark, không
+refit pair head trên toàn development.
+
+\section{Selection, fusion và controls}
+
+Checkpoint được chọn bằng natural-candidate validation BCE thấp nhất;
+tie chọn earliest epoch. Validation gồm toàn bộ 117,700 ordered Top-100
+pairs, không balanced resampling. Checkpoint thắng là epoch 19,
+BCE = 0.3464334. Sau đó chọn fusion coefficient trên validation:
+\[
+ S(q,x)=\lambda\cos(q,x)+(1-\lambda)C(q,x),\qquad
+ \lambda\in\{0,0.25,0.5,0.75,0.9,1\}.
+\]
+Tie rule: integer Hits@1 $\rightarrow$ Hits@2 $\rightarrow$ Hits@4
+$\rightarrow$ Hits@8 $\rightarrow$ larger $\lambda$.
+Giá trị khóa là $\lambda=0.75$, $N=100$. Chỉ reorder cosine Top-100;
+stable ties giữ thứ tự cosine ban đầu. Không min-max normalize scores.
+Checkpoint, grid và control hashes được lưu trong tuning record
+\texttt{selection.json}; benchmark không chọn lại epoch hoặc coefficient.
+
+Các controls dùng EDL heads retrain trên raw CLS của \emph{cùng accepted
+M1 cache}, thay vì ghép historical E1 cache khác provenance. Tuning head
+train fit-only; final head train toàn development, không train benchmark.
+Đây là khác biệt về dữ liệu fit của controls so với pair head, cần lưu ý
+khi diễn giải; không phải ablation chỉ thay similarity.
+EDL dùng $\alpha=e+1$, $u=100/\sum_j\alpha_j$ và certainty score $1-u$.
+U1 sort tăng dần candidate uncertainty trong Top-$N$; validation chọn
+$N=10$ từ $\{10,20,50,100\}$. A1 dùng raw $\alpha$ 100 chiều và Euclidean
+L2 trên full gallery; A2 dùng normalized $\alpha$ và cosine.
+A1 giữ representation/distance của Evidential Transformers nhưng toàn
+hệ thống là frozen-DINOv3 adaptation, không phải faithful reproduction.
+
+\section{Kết quả retrieval}
+
+\begin{table}[ht]
+\centering
+\caption{Validation Recall (\%), 1,177 queries.}
+\begin{tabular}{lrrrr}
+\toprule Method & R@1 & R@2 & R@4 & R@8\\
+\midrule
+M1 cosine & 83.5174 & 88.9550 & 93.5429 & 96.4316\\
+Pair-only & 80.0340 & 87.5106 & 92.2685 & 96.1767\\
+Fusion & 85.5565 & 90.1444 & 93.6279 & 97.0263\\
+U1 & 61.5123 & 77.2302 & 89.2948 & 96.9414\\
+A1 & 40.2719 & 47.4936 & 56.4146 & 64.6559\\
+A2 & 26.9329 & 32.3704 & 40.5268 & 48.7681\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[ht]
+\centering
+\caption{Benchmark Recall (\%), 5,924 queries thuộc classes 100--199.}
+\begin{tabular}{lrrrrr}
+\toprule Method & Hits@1 & R@1 & R@2 & R@4 & R@8\\
+\midrule
+M1 cosine & 5,213 & 87.9980 & 92.7583 & 95.2566 & 97.0122\\
+Pair-only & 4,673 & 78.8825 & 88.5213 & 93.7205 & 96.4382\\
+Fusion & 5,214 & 88.0149 & 92.7920 & 95.3579 & 97.0628\\
+U1 & 4,751 & 80.1992 & 88.5719 & 93.9568 & 96.8265\\
+A1 & 1,847 & 31.1783 & 41.9311 & 52.9878 & 64.3653\\
+A2 & 1,564 & 26.4011 & 35.7529 & 47.7549 & 59.1323\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Fusion tăng 24 Hits@1 trên validation (+2.0391 điểm phần trăm), nhưng
+chỉ tăng một trên unseen-class benchmark. Cosine Top-100 chứa ít nhất một
+positive cho 99.3923\% benchmark queries; đây là candidate coverage, không
+phải Recall@1 hay accuracy của pair model. Pair-only là candidate-constrained
+reranking, không phải exhaustive learned retrieval.
+
+\begin{table}[ht]
+\centering
+\caption{Fusion trừ cosine: paired query bootstrap, 2,000 samples,
+95\% percentile intervals. Đơn vị: điểm phần trăm.}
+\begin{tabular}{lrrr}
+\toprule Metric & Delta & Lower & Upper\\
+\midrule
+R@1 & +0.0169 & -0.3038 & +0.3376\\
+R@2 & +0.0338 & -0.2363 & +0.3038\\
+R@4 & +0.1013 & -0.1182 & +0.3038\\
+R@8 & +0.0506 & -0.1350 & +0.2363\\
+\bottomrule
+\end{tabular}
+\end{table}
+Các intervals đều chứa 0. Bootstrap chỉ là exploratory query-level
+uncertainty, không đo seed variance, không khắc phục selection bias hay
+sự phụ thuộc giữa queries cùng class/shared gallery.
+
+\section{Confidence và calibration}
+
+\begin{table}[ht]
+\centering
+\caption{Dự đoán correctness của \emph{cùng cosine Top-1 candidate},
+5,924 queries. AUROC/AUPRC cao hơn tốt hơn; ECE/Brier/AURC thấp hơn tốt hơn.}
+\begin{tabular}{lrrrrr}
+\toprule Score & AUROC & AUPRC & ECE & Brier & AURC\\
+\midrule
+Mapped cosine $(s+1)/2$ & 0.6751 & 0.9300 & 0.0210 & 0.1016 & 0.0716\\
+Pair confidence & 0.6283 & 0.9239 & 0.0833 & 0.1114 & 0.0776\\
+Image certainty $1-u$ & 0.5790 & 0.9051 & 0.8525 & 0.8321 & 0.0954\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Pair confidence tốt hơn image certainty nhưng \textbf{không tốt hơn mapped
+cosine} trong các metrics trên. Mapped cosine là fixed score transform,
+không phải learned probability calibration. ECE dùng 10 bins; certainty
+không được giả định là xác suất class-match nên calibration metrics của
+nó chỉ là diagnostic. AUPRC cần đọc cùng positive prevalence 87.9980\%.
+
+Trên 592,400 natural Top-100 pairs, pair model đạt AUROC 0.7049,
+AUPRC 0.6357, ECE 0.3689 và Brier 0.3645; positive prevalence 42.2091\%.
+Balanced mined training khác phân phối candidate evaluation, nên sigmoid
+chưa được chứng minh là calibrated probability. Không so trực tiếp metrics
+của toàn candidate pool với Top-1 pool như thể cùng bài toán.
+Mean absolute swap disagreement là 0.0078924, chỉ dùng diagnostic;
+không thay orientation đã preregister sau khi xem benchmark.
+
+\section{Artifacts, xác minh và tái lập}
+
+Nguồn số liệu là \texttt{outputs/e2b\_pair\_confidence/seed\_42/}:
+\texttt{metrics/}, \texttt{selection.json}, \texttt{scores/},
+\texttt{rankings/}, \texttt{controls/}, \texttt{failure\_cases/} và
+\texttt{export/}. Portable manifests đã được kiểm tra: 20 required-artifact
+entries khớp SHA-256 ở cả thư mục gốc và export. Cache nguồn khớp provenance;
+inference subset 1,600 pairs mỗi split khớp saved logits/cosine với sai số
+dưới $1.5\times10^{-6}$. Kiểm tra này không thay thế full training/DDP rerun.
+
+Run thực tế dùng Python 3.12.13, PyTorch 2.10.0+cu128, CUDA 12.8 và hai
+Tesla T4. Environment ghi Git commit
+\texttt{a860d9e9bdb16238c3698bb67ae7d12ead1c3f38}, dirty worktree;
+commit đơn lẻ vì vậy không đủ tái dựng source chính xác.
+Checkpoint SHA-256 được khóa trong selection và export manifests.
+Lệnh full workflow từ repository root:
+\begin{verbatim}
+python scripts/run_e2b.py --config configs/cub_e2b.yaml --stage validation
+python scripts/run_e2b.py --config configs/cub_e2b.yaml --stage test
+\end{verbatim}
+
+\section{Giới hạn và kết luận}
+
+Fit/validation cùng classes 0--99 nên validation chưa đánh giá trực tiếp
+class-generalization sang classes 100--199. Một seed không cho phép kết luận
+về độ ổn định training. Benchmark đã được sử dụng ở E2A; không tuyên bố
+unbiased final-test performance. Top-100 cố định giới hạn reranking;
+confidence chưa calibrated và controls không hoàn toàn đồng nhất fit budget.
+
+Trong run đã nghiệm thu, \textbf{M1 cosine vẫn là baseline mạnh}; fusion
+gần như giữ nguyên performance, còn pair-only làm giảm Recall@1.
+Không coi delta dương rất nhỏ là thành công chắc chắn. Các bước sau nếu
+thực hiện cần được lập protocol riêng: class-disjoint validation,
+multi-seed evaluation, calibration trên development và controlled sampling
+ablations; không điều chỉnh phương pháp trực tiếp từ benchmark hiện tại.
+
+\section{Method lineage}
+
+EDL: \href{https://arxiv.org/abs/1806.01768v3}{Sensoy et al.,
+Evidential Deep Learning, arXiv:1806.01768v3}, Dirichlet evidence,
+$\alpha=e+1$ và $u=K/\sum\alpha$.
+Alpha retrieval control: \href{https://arxiv.org/abs/2409.01082v2}{Evidential
+Transformers, arXiv:2409.01082v2}. E2B pair MLP, static sampling và raw-score
+fusion là implementation/experimental design của repository; không gán
+chúng là official implementation của các bài báo trên.
+
+\end{document}
