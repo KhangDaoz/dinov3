@@ -21,6 +21,19 @@ def fusion_order(cosine, confidence, coefficient: float):
     return order, score
 
 
+def constrained_fusion_order(cosine, confidence, coefficient: float, top_n: int):
+    """Rank only the first ``top_n`` cosine candidates and preserve the tail."""
+    if not 0 < top_n <= cosine.shape[1]:
+        raise ValueError("top_n exceeds candidate depth")
+    local_order, score = fusion_order(
+        cosine[:, :top_n], confidence[:, :top_n], coefficient
+    )
+    tail = torch.arange(
+        top_n, cosine.shape[1], device=cosine.device
+    ).expand(cosine.shape[0], -1)
+    return torch.cat((local_order, tail), dim=1), score
+
+
 def ranking_metrics(candidates, labels):
     relevant = labels[candidates].eq(labels[:, None])
     hits = {f"hits_at_{k}": int(relevant[:, :k].any(1).sum()) for k in (1, 2, 4, 8)}
@@ -107,6 +120,49 @@ def write_reliability_svg(metrics: dict, path) -> None:
            + ''.join(points) + '</svg>')
     path.parent.mkdir(parents=True,exist_ok=True)
     path.write_text(svg,encoding="utf-8")
+
+
+def write_grid_svg(grid: dict, path, title: str) -> None:
+    """Write an R@1 plot for every Top-N/lambda combination as portable SVG."""
+    colors = ("#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b")
+    top_ns = sorted(int(value) for value in grid)
+    lambdas = sorted({float(value) for row in grid.values() for value in row})
+    values = [grid[str(n)][str(value)]["recall_at_1"] for n in top_ns for value in lambdas]
+    lower = max(0.0, min(values) - 0.02)
+    upper = min(1.0, max(values) + 0.02)
+    span = max(upper - lower, 1e-6)
+    parts = [
+        '<svg xmlns="http://www.w3.org/2000/svg" width="760" height="500" viewBox="0 0 760 500">',
+        '<rect width="760" height="500" fill="white"/>',
+        f'<text x="380" y="28" text-anchor="middle" font-size="18">{title}</text>',
+        '<path d="M70 55 V420 H690" fill="none" stroke="black"/>',
+        '<text x="380" y="470" text-anchor="middle">Reranking depth N</text>',
+        '<text x="18" y="245" transform="rotate(-90 18 245)" text-anchor="middle">Recall@1</text>',
+    ]
+    for tick in range(6):
+        value = lower + span * tick / 5
+        y = 420 - 365 * tick / 5
+        parts.append(f'<path d="M65 {y:.1f} H690" stroke="#dddddd"/>')
+        parts.append(f'<text x="58" y="{y + 4:.1f}" text-anchor="end" font-size="11">{100*value:.2f}%</text>')
+    for index, coefficient in enumerate(lambdas):
+        points = []
+        for column, n in enumerate(top_ns):
+            x = 90 + 580 * column / max(1, len(top_ns) - 1)
+            value = grid[str(n)][str(coefficient)]["recall_at_1"]
+            y = 420 - 365 * (value - lower) / span
+            points.append(f"{x:.1f},{y:.1f}")
+            parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="{colors[index % len(colors)]}"/>')
+        parts.append(f'<polyline points="{" ".join(points)}" fill="none" stroke="{colors[index % len(colors)]}" stroke-width="2"/>')
+        legend_y = 60 + 20 * index
+        parts.append(f'<path d="M705 {legend_y} h18" stroke="{colors[index % len(colors)]}" stroke-width="3"/>')
+        parts.append(f'<text x="728" y="{legend_y + 4}" font-size="11">lambda={coefficient:g}</text>')
+    for column, n in enumerate(top_ns):
+        x = 90 + 580 * column / max(1, len(top_ns) - 1)
+        parts.append(f'<text x="{x:.1f}" y="440" text-anchor="middle">{n}</text>')
+    parts.append('</svg>')
+    path = __import__('pathlib').Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(''.join(parts), encoding='utf-8')
 
 
 def paired_bootstrap_chunked(baseline, proposed, device, samples=2000, seed=42):

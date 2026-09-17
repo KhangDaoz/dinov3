@@ -127,11 +127,25 @@ def main() -> None:
             / "test.json"
         )
         test_metrics.append(json.loads(metrics_path.read_text(encoding="utf-8")))
-    summary = {"seeds": list(config.training.seeds), "baseline": {}, "r1": {}}
+    summary = {
+        "seeds": list(config.training.seeds),
+        "baseline": {},
+        "r1": {},
+        "r1_topn_grid": {},
+    }
     for method in ("baseline", "r1"):
         for metric in test_metrics[0][method]:
             values = [run[method][metric] for run in test_metrics]
             summary[method][metric] = {
+                "mean": statistics.fmean(values),
+                "std": statistics.stdev(values) if len(values) > 1 else 0.0,
+            }
+    for top_n in config.retrieval.top_n_grid:
+        key = str(top_n)
+        summary["r1_topn_grid"][key] = {}
+        for metric in test_metrics[0]["r1_topn_grid"][key]:
+            values = [run["r1_topn_grid"][key][metric] for run in test_metrics]
+            summary["r1_topn_grid"][key][metric] = {
                 "mean": statistics.fmean(values),
                 "std": statistics.stdev(values) if len(values) > 1 else 0.0,
             }

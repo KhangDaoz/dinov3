@@ -74,7 +74,7 @@ def main() -> None:
     fit_records, validation_records = split_development_records(
         records,
         config.dataset.validation_fraction,
-        seed,
+        config.training.seed,
     )
     development_dataset = _select(
         cache,

@@ -9,8 +9,9 @@ from .pair_cache import verify_provenance
 
 
 def load_e1_control(config, split, view, provenance, device=None):
-    # Filename scope is deliberate: final heads have seen validation images.
-    scope = "tuning" if split == "validation" else "final"
+    # E2B comparison is fit-only for both validation and test. This matches
+    # the Pair Confidence training ownership and prevents a larger EDL budget.
+    scope = "tuning"
     if config.controls.source == "controlled_retrain":
         root = Path(config.output_root) / "controls/edl"
         path = root / "tuning/uncertainty/validation.pt"
@@ -19,7 +20,7 @@ def load_e1_control(config, split, view, provenance, device=None):
             from uncertainty_retrieval.training.evidential import (
                 FeatureDataset, export_evidential_outputs, make_feature_loader,
             )
-            checkpoint_path = root / "final/best.pt"
+            checkpoint_path = root / "tuning/best.pt"
             checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
             verify_provenance(checkpoint["provenance"], {k:v for k,v in provenance.items()
                                                        if not k.endswith("mining_sha256")})
@@ -32,7 +33,7 @@ def load_e1_control(config, split, view, provenance, device=None):
             from uncertainty_retrieval.training.evidential import save_evidential_outputs
             from uncertainty_retrieval.utils import distributed_context
             if distributed_context()[0] == 0:
-                save_evidential_outputs(payload, root / "final/uncertainty/test.pt")
+                save_evidential_outputs(payload, root / "tuning/uncertainty/test.pt")
             source_hash = sha256_file(checkpoint_path)
             path = checkpoint_path
         else:
@@ -84,6 +85,6 @@ def load_e1_control(config, split, view, provenance, device=None):
         "scope": scope, "source": str(path), "source_sha256": source_hash,
         "procedure": config.controls.source,
         "feature_cache_sha256": cache_hash,
-        "training_budget": "fit_only" if scope == "tuning" else "all_development",
+        "training_budget": "fit_only",
         "notice": "DINOv3 adaptation; A1 follows raw-alpha/L2 representation only.",
     }

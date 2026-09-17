@@ -12,11 +12,11 @@ from uncertainty_retrieval.data.pair_cache import load_pair_inputs, verify_prove
 from uncertainty_retrieval.models.evidential import EvidentialHead
 from uncertainty_retrieval.training.evidential import (
     FeatureDataset, export_evidential_outputs, make_feature_loader,
-    save_evidential_outputs, train_evidential_head, train_evidential_fixed_epochs,
+    save_evidential_outputs, train_evidential_head,
 )
 from uncertainty_retrieval.training.pair_confidence import setup
 from uncertainty_retrieval.training.representation import atomic_torch_save
-from uncertainty_retrieval.utils import cleanup_distributed, distributed_barrier, seed_everything, write_json
+from uncertainty_retrieval.utils import cleanup_distributed, distributed_barrier, write_json
 
 
 def prepare_controls(config_path):
@@ -51,18 +51,8 @@ def prepare_controls(config_path):
                         "fit_sampler_padding":(-len(fit["image_ids"]))%world,
                         "procedure":"controlled_E1_retraining_on_raw_M1_CLS"},root/"training.json")
         distributed_barrier(device)
-        development={key:torch.cat((fit[key],val[key])) for key in ("raw_features","labels","image_ids")}
-        dev_loader,sampler=loader(dataset(development),world>1,True)
-        seed_everything(42)
-        final_model=EvidentialHead(768,100)
-        final_path=root/"final/best.pt"
-        train_evidential_fixed_epochs(final_model,dev_loader,device,result.best_epoch,10,
-                                     0.001,0.0001,False,final_path,rank,sampler)
         if rank==0:
-            state=torch.load(final_path,map_location="cpu",weights_only=True)
-            state["provenance"]=provenance
-            atomic_torch_save(state,final_path)
-            print(f"Controlled E1 heads saved: {root.resolve()}",flush=True)
+            print(f"Controlled fit-only E1 head saved: {root.resolve()}",flush=True)
         distributed_barrier(device)
     finally:
         cleanup_distributed()

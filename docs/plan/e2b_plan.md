@@ -7,12 +7,8 @@ of image-level evidential uncertainty observed in E1. Evaluate whether it
 improves retrieval ranking and predicts retrieval correctness; these are
 separate research questions, neither is assumed to succeed.
 
-This is a proposed implementation plan, not an executed experiment.
-Implement in phases and run only focused unit tests initially. The user runs
-full training, DDP integration, validation, and benchmark evaluation later.
-
-Implementation status: entry points and focused synthetic tests are now
-implemented; no full E2B experiment has been executed by the agent.
+This plan defines the implemented E2B pipeline and the artifacts required for
+a complete rerun from validation through benchmark evaluation.
 
 ## 2. Accepted inputs and inherited limitations
 
@@ -139,15 +135,18 @@ Do not add per-query min-max normalization or an unplanned affine transform.
 Cosine lies in `[-1,1]`, confidence in `[0,1]`; lambda is a fusion coefficient,
 not a calibrated mixture of probabilities. Persist the exact score convention.
 
-Fixed reranking budget **N=100** for the primary run. Reorder only these
-candidates; candidates beyond N retain their baseline order and cannot be
-promoted. Stable score ties preserve original cosine order. `lambda=1`
+Evaluate **N in {10, 20, 50, 100}** for Image Uncertainty, Pair-wise
+Confidence, and Fusion. Candidates beyond N retain their baseline order and
+cannot be promoted. N=100 remains the primary comparison, while all four
+budgets are saved for controlled analysis. Stable score ties preserve original
+cosine order. `lambda=1`
 must return the original baseline ranking exactly without an extra sort.
 
-After freezing the BCE-selected checkpoint, select lambda on validation from
+After freezing the BCE-selected checkpoint, evaluate every N/lambda
+combination on validation and test. Select lambda on the N=100 validation row from
 `{0,0.25,0.5,0.75,0.9,1}` by integer Hits@1 -> Hits@2 -> Hits@4 -> Hits@8
 -> larger lambda (prefer the smaller learned intervention when all Hits tie).
-Save every grid result and the decision trace. A winning lambda of 1 is a
+Save every N/lambda grid result and the decision trace. A winning lambda of 1 is a
 valid null result; do not exclude it to force an improvement.
 
 Save `selection.json` with checkpoint/feature/split/config hashes, selected
@@ -244,7 +243,9 @@ observations as independent query-level statistical samples.
 Select successes/failures by deterministic categories and image-ID ordering:
 wrong->correct, correct->wrong, still-wrong, still-correct. Persist IDs,
 labels, image paths, baseline/fused candidate IDs, cosine, confidence and
-fusion scores. Labels are for analysis only. Do not cherry-pick after viewing
+fusion scores. Export PNG contact sheets showing query, cosine Top-1 and
+reranked Top-1, plus SVG Recall@1 curves over N and lambda. Labels are for
+analysis only. Do not cherry-pick after viewing
 qualitative results. Report single-seed results, not seed mean +/- std.
 
 ## 9. Implementation phases and proposed files
@@ -331,9 +332,12 @@ outputs/e2b_pair_confidence/seed_42/
 ├── selection.json
 ├── scores/{validation,test}_top100.pt
 ├── rankings/{validation,test}_{baseline,pair,fusion}.pt
-├── metrics/{validation_grid,test,reliability,bootstrap}.json
-├── controls/                 # alpha and image-uncertainty outputs
-├── failure_cases/
+├── rankings/{validation,test}_fusion_n{N}_lambda{value}.pt
+├── metrics/{validation,test}_topn_lambda_grid.json
+├── controls/{validation,test}_U1_n{N}.pt
+├── failure_cases/{split}_{method}_n{N}.json
+├── figures/{split}_topn_lambda_recall1.svg
+├── figures/failure_cases/*.png
 └── export/                   # portable evidence bundle, not just summary
 ```
 

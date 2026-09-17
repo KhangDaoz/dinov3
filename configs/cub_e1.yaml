@@ -8,7 +8,7 @@ dataset:
 
 model:
   model_id: facebook/dinov3-vitb16-pretrain-lvd1689m
-  revision: main
+  revision: 5931719e67bbdb9737e363e781fb0c67687896bc
   embedding_dim: 768
   register_tokens: 4
   evidence_activation: softplus

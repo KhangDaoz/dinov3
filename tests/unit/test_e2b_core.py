@@ -8,7 +8,8 @@ import torch.nn.functional as F
 from uncertainty_retrieval.config_e2b import load_e2b_config
 from uncertainty_retrieval.data.pair_cache import verify_provenance
 from uncertainty_retrieval.evaluation.pair_confidence import (
-    fusion_order, raw_alpha_rankings, reliability, select_lambda,
+    constrained_fusion_order, fusion_order, raw_alpha_rankings, reliability,
+    select_lambda,
 )
 from uncertainty_retrieval.models.pair_confidence import PairConfidenceNetwork
 from uncertainty_retrieval.sampling.pairs import sample_epoch_pairs, validate_pair_endpoints
@@ -73,6 +74,15 @@ def test_fusion_endpoints_ties_and_lambda_tie_rule():
     assert order.tolist()==[[1,2,0]]
     grid={str(value):{f"hits_at_{k}":1 for k in (1,2,4,8)} for value in (0,0.5,1)}
     assert select_lambda(grid)==1
+
+
+def test_constrained_fusion_preserves_cosine_tail():
+    cosine = torch.tensor([[.9, .8, .7, .6]])
+    confidence = torch.tensor([[.1, .9, .2, 1.]])
+    order, _ = constrained_fusion_order(cosine, confidence, 0, top_n=2)
+    assert order.tolist() == [[1, 0, 2, 3]]
+    with pytest.raises(ValueError, match="top_n"):
+        constrained_fusion_order(cosine, confidence, 0, top_n=5)
 
 
 def test_raw_alpha_l2_not_normalized():

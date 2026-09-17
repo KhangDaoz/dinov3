@@ -62,7 +62,7 @@ def test_synthetic_validation_then_frozen_test_exports_complete_bundle(tmp_path,
             alpha, uncertainty, {"source": "synthetic_fixture"}
         ))
         for name in ("controls/edl/tuning/uncertainty/validation.pt",
-                     "controls/edl/final/best.pt"):
+                     "controls/edl/tuning/best.pt"):
             atomic_torch_save({}, tmp_path / name)
     pipeline.evaluate(tmp_path / "config.yaml","validation")
     before = sha256_file(tmp_path / "checkpoints/best.pt")
@@ -70,8 +70,19 @@ def test_synthetic_validation_then_frozen_test_exports_complete_bundle(tmp_path,
     assert sha256_file(tmp_path / "checkpoints/best.pt")==before
     for name in ("scores/test_top100.pt","metrics/test.json","metrics/test_bootstrap.json",
                  "failure_cases/test.json","rankings/test_fusion.pt","selection.json","report.tex",
-                 "figures/test_candidate_calibration.svg"):
+                 "figures/test_candidate_calibration.svg",
+                 "metrics/test_topn_lambda_grid.json",
+                 "metrics/test_method_topn.json",
+                 "figures/test_topn_lambda_recall1.svg",
+                 "figures/failure_cases/test_fusion_n100_still_wrong.png"):
         assert (tmp_path / "export" / name).is_file()
+    grid = __import__("json").loads(
+        (tmp_path / "metrics/test_topn_lambda_grid.json").read_text()
+    )
+    assert set(grid) == {"10", "20", "50", "100"}
+    assert all(len(row) == len(config.evaluation.lambdas) for row in grid.values())
     if controls_enabled:
-        for name in ("controls/test_U1.pt", "controls/test_A1.pt", "controls/test_A2.pt"):
+        for name in ("controls/test_U1.pt", "controls/test_A1.pt", "controls/test_A2.pt",
+                     "controls/test_U1_n10.pt", "controls/test_U1_n100.pt",
+                     "controls/test_u1_grid.json"):
             assert (tmp_path / "export" / name).is_file()

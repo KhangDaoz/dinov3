@@ -18,5 +18,9 @@ Final score = lambda * Cosine Similarity + (1-lambda) * Pair Confidence. Khảo 
 So sánh: DINOv3 baseline, Evidential embedding (sử dụng α-embeddings như bài báo 2409.01082v2), Image uncertainty reranking, Pair-wise Confidence, Fusion Cosine + Confidence.
 8. Ablation study
 Đánh giá ảnh hưởng của cosine similarity, pair confidence và hệ số lambda.
+Image Uncertainty, Pair-wise Confidence và Fusion đều lưu kết quả tại Top-N =
+10, 20, 50, 100. Fusion chạy toàn bộ lambda khai báo trong config để có thể so
+sánh mà không cần chạy lại inference.
 9. Kết quả cần lưu
-Lưu checkpoint mô hình, confidence score, embedding, bảng Recall@K và các failure cases để phân tích.
+Lưu checkpoint mô hình, confidence score, embedding, bảng Recall@K, toàn bộ
+grid Top-N/lambda, biểu đồ và ảnh minh họa failure cases để phân tích.

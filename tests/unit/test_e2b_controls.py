@@ -29,18 +29,18 @@ def test_control_validation_uses_tuning_and_retains_full_vectors(tmp_path):
         load_e1_control(config,"validation",view,payload["provenance"])
 
 
-def test_benchmark_control_only_forwards_frozen_final_head(tmp_path):
+def test_benchmark_control_only_forwards_frozen_fit_only_head(tmp_path):
     config=replace(E2BConfig(),output_root=str(tmp_path))
     provenance={"cache_sha256":"fixture"}
     model=EvidentialHead(768,100)
     atomic_torch_save({"model":model.state_dict(),"provenance":provenance},
-                      tmp_path/"controls/edl/final/best.pt")
+                      tmp_path/"controls/edl/tuning/best.pt")
     view={"raw_features":torch.randn(2,768),"image_ids":torch.tensor([51,52]),
           "labels":torch.tensor([100,101])}
     alpha,u,metadata=load_e1_control(config,"test",view,provenance,torch.device("cpu"))
     assert alpha.shape==(2,100) and (u>0).all()
-    assert metadata["training_budget"]=="all_development"
-    assert (tmp_path/"controls/edl/final/uncertainty/test.pt").is_file()
-    # A final checkpoint cannot substitute for missing fit-only validation outputs.
+    assert metadata["training_budget"]=="fit_only"
+    assert (tmp_path/"controls/edl/tuning/uncertainty/test.pt").is_file()
+    # A checkpoint cannot substitute for a missing split-owned validation export.
     with pytest.raises(FileNotFoundError):
         load_e1_control(config,"validation",view,provenance)

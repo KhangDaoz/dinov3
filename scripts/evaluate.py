@@ -11,6 +11,7 @@ import torch
 from uncertainty_retrieval.config import load_config
 from uncertainty_retrieval.data.patch_cache import load_feature_cache
 from uncertainty_retrieval.evaluation.reporting import (
+    evaluate_ranking,
     final_e1_statistics,
     select_r1_top_n,
     select_r2_parameters,
@@ -142,7 +143,36 @@ def main() -> None:
         return
     if args.top_n is None:
         raise ValueError("--top-n must be the locked validation value for test")
-    r1 = uncertainty_rerank(result.indices, uncertainty, args.top_n)
+    if args.top_n not in config.retrieval.top_n_grid:
+        raise ValueError("--top-n must belong to retrieval.top_n_grid")
+    r1_grid = {}
+    r1_rankings = {}
+    failure_grid = {}
+    for top_n in config.retrieval.top_n_grid:
+        reranked = uncertainty_rerank(result.indices, uncertainty, top_n)
+        r1_rankings[top_n] = reranked
+        r1_grid[str(top_n)] = evaluate_ranking(
+            reranked, labels, labels, config.retrieval.recall_k
+        )
+        failure_grid[str(top_n)] = _failure_cases(
+            result.indices,
+            reranked,
+            labels,
+            evidential["image_ids"],
+            uncertainty,
+        )
+        _save_rankings(
+            root / "rankings" / f"r1_uncertainty_n{top_n}.pt",
+            reranked,
+            None,
+            evidential["image_ids"],
+            labels,
+        )
+        write_json(
+            failure_grid[str(top_n)],
+            root / "failure_cases" / f"top1_changes_n{top_n}.json",
+        )
+    r1 = r1_rankings[args.top_n]
     statistics = final_e1_statistics(
         result.indices,
         r1,
@@ -160,8 +190,6 @@ def main() -> None:
             args.top_n,
             args.beta,
         )
-        from uncertainty_retrieval.evaluation.reporting import evaluate_ranking
-
         statistics["r2_secondary"] = evaluate_ranking(
             r2,
             labels,
@@ -199,6 +227,9 @@ def main() -> None:
         ),
         root / "failure_cases" / "top1_changes.json",
     )
+    write_json(r1_grid, root / "metrics" / "test_topn_grid.json")
+    statistics["r1_topn_grid"] = r1_grid
+    statistics["selected_top_n"] = args.top_n
     write_json(statistics, root / "metrics" / "test.json")
 
 
