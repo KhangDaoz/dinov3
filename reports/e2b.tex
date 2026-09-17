@@ -1,231 +1,401 @@
 \documentclass[11pt,a4paper]{article}
-\usepackage[utf8]{inputenc}
+\usepackage[a4paper,top=2.5cm,bottom=2.5cm,left=3cm,right=2.5cm]{geometry}
 \usepackage[T5]{fontenc}
+\usepackage[utf8]{inputenc}
 \usepackage[vietnamese]{babel}
-\usepackage{lmodern}
-\usepackage[margin=2.5cm]{geometry}
-\usepackage{amsmath}
-\usepackage{booktabs}
+\usepackage{amsmath,amssymb,booktabs,array,microtype,siunitx,enumitem,caption}
+\usepackage{setspace,titlesec,fancyhdr}
 \usepackage[hidelinks]{hyperref}
-\title{Báo cáo thực nghiệm E2B\\Pair-wise Confidence Learning trên Frozen DINOv3}
-\author{}
-\date{16 tháng 9 năm 2026}
+\sisetup{output-decimal-marker={,}}
+\setlist{nosep}
+\setstretch{1.18}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{6pt plus 1pt minus 1pt}
+\renewcommand{\arraystretch}{1.18}
+\captionsetup{font=small,labelfont=bf,labelsep=period,justification=centering}
+\titleformat{\section}{\large\bfseries}{\thesection.}{0.6em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection.}{0.6em}{}
+\titlespacing*{\section}{0pt}{16pt}{7pt}
+\titlespacing*{\subsection}{0pt}{11pt}{5pt}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small Báo cáo thực nghiệm E2B}
+\fancyhead[R]{\small Pair-wise Confidence Learning}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\abstractname}{Tóm tắt}
+
+\title{\bfseries\LARGE Học độ tin cậy theo cặp cho truy hồi ảnh\\[0.3em]
+dựa trên biểu diễn DINOv3}
+\author{Báo cáo thực nghiệm E2B}
+\date{17 tháng 9 năm 2026}
+
 \begin{document}
 \maketitle
+\thispagestyle{plain}
 
-\section{Tóm tắt}
+\begin{abstract}
+Báo cáo đánh giá Pair-wise Confidence Learning cho truy hồi ảnh trên
+CUB-200-2011. Trên CLS embedding của DINOv3 ViT-B/16 được giữ nguyên,
+một mạng MLP học confidence score cho từng cặp ảnh truy vấn và ảnh ứng viên.
+Checkpoint và hệ số kết hợp được chọn trên tập validation; cấu hình cuối dùng
+epoch 19, Top-$N=100$ và $\lambda=0{,}75$.
+Trên 5.924 ảnh kiểm tra thuộc các lớp chưa thấy, Fusion Cosine + Confidence
+đạt Recall@1 \SI{88.0149}{\percent}, so với \SI{87.9980}{\percent} của
+DINOv3 Baseline: tăng đúng một ảnh truy vấn. Khoảng bootstrap 95\% chứa 0 ở mọi
+Recall@K, trong khi Pair-wise Confidence Top-100 chỉ đạt
+\SI{78.8825}{\percent}. Một phép so sánh bổ sung dùng cùng tập train và cùng
+$N\in\{10,20,50,100\}$ cho Pair-wise Confidence và Image Uncertainty.
+Pair-wise Confidence cao hơn Image Uncertainty tại mọi $N$. Với thiết lập
+chính $N=100$, Recall@1 lần lượt là \SI{78.8825}{\percent} và
+\SI{27.3970}{\percent}. Tuy vậy, cả hai vẫn thấp hơn DINOv3 Baseline.
 
-E2B kiểm tra hai mục tiêu riêng biệt: cải thiện thứ hạng truy xuất bằng
-pair-wise compatibility và đánh giá khả năng dự đoán một cặp ảnh đúng class.
-Trên benchmark 5,924 ảnh, fusion đạt Recall@1 = 88.0149\%, so với
-87.9980\% của M1 cosine: tăng đúng một query, hay 0.0169 điểm phần trăm.
-Khoảng bootstrap 95\% của chênh lệch chứa 0 ở mọi K được xét.
-\textbf{Chưa có bằng chứng cải thiện retrieval rõ rệt trong run này.}
-Pair-only và các evidential controls đều thấp hơn cosine baseline.
+\noindent\textbf{Từ khóa:} DINOv3, truy hồi ảnh, pair-wise confidence,
+uncertainty, reranking.
+\end{abstract}
 
-Kết quả là \textbf{single-seed result (42)}, không phải mean $\pm$ std.
-Classes 100--199 đã được dùng để chọn M1 trong E2A; do đó đây là benchmark
-có inherited representation-selection bias, không phải final test độc lập.
+\section{Giới thiệu}
+Độ bất định của từng ảnh không cho biết trực tiếp hai ảnh có cùng lớp hay
+không. Một ảnh ứng viên có độ tin cậy cao vẫn có thể khác lớp ảnh truy vấn;
+ngược lại, ảnh có độ bất định cao vẫn có thể được truy xuất đúng. E2B vì vậy
+học confidence score trực tiếp từ từng cặp ảnh, rồi kiểm tra score này có cải
+thiện thứ hạng cosine hay không.
 
-\section{Dữ liệu và đầu vào}
+E2B giữ nguyên DINOv3 và sử dụng CLS embedding tốt nhất từ E2A. Hai câu hỏi
+được đánh giá riêng: phép kết hợp có cải thiện Recall@K hay không, và
+Pair-wise Confidence có phản ánh kết quả truy xuất đúng hoặc sai tốt hơn độ
+bất định của từng ảnh hay không.
 
-CUB-200-2011 được chia theo class: development gồm 5,864 ảnh classes 0--99;
-benchmark gồm 5,924 ảnh unseen classes 100--199. Development dùng stratified
-image-level 80/20, seed 42: 4,687 fit và 1,177 validation. Không dùng official
-image-level split. Hai đầu của training pair chỉ thuộc fit; validation pair
-chỉ thuộc validation. Query và gallery trùng tập trong từng split; loại
-self-match bằng image ID, đánh giá Recall@1/2/4/8.
+\section{Công trình liên quan}
+DINOv3 được dùng để trích xuất embedding ảnh \cite{simeoni2025dinov3}.
+Evidential Deep Learning tạo evidence, $\alpha$ và uncertainty cho từng ảnh
+\cite{sensoy2018edl}. Evidential Transformers sử dụng $\alpha$-embedding cho
+truy hồi ảnh và là cơ sở của nhánh Evidential Embedding
+\cite{dordevic2024evidential}. Mạng Pair-wise Confidence và công thức kết hợp
+với cosine là thiết kế của thực nghiệm E2B, không phải mã chính thức của các
+công trình trên.
 
-Representation là final CLS 768 chiều của frozen DINOv3 ViT-B/16,
-\texttt{facebook/dinov3-vitb16-pretrain-lvd1689m}, revision
-\texttt{5931719e67bbdb9737e363e781fb0c67687896bc}; ảnh 224$\times$224.
-L2-normalize CLS trước cosine và pair inference. Không train backbone.
-Bundle M1 được E2B chấp nhận có Hits@1 = 5,213, khác số 5,214 trong
-báo cáo E2A trước đó. Mọi delta ở đây dùng \emph{baseline trong cùng bundle
-E2B}, không ghép baseline từ các lần chạy khác nhau.
+\section{Phương pháp}
+\subsection{DINOv3 Baseline}
+Với ảnh $x$, frozen DINOv3 sinh final CLS token $h_{\mathrm{cls}}(x)$:
+\begin{equation}
+ z(x)=\frac{h_{\mathrm{cls}}(x)}{\lVert h_{\mathrm{cls}}(x)\rVert_2},
+ \qquad s_{\cos}(q,x)=z(q)^\top z(x), \qquad z(x)\in\mathbb{R}^{768}.
+\end{equation}
+DINOv3 Baseline xếp toàn bộ ảnh theo $s_{\cos}$ giảm dần và tạo danh sách
+ảnh ứng viên dùng chung cho các phương pháp sắp xếp lại.
 
-\section{Pair network và training}
-
-Với $q,x$ là normalized CLS, inference luôn giữ thứ tự query trước:
+\subsection{Pair-wise Confidence}
+Đầu vào của mạng và confidence score được định nghĩa bởi
 \begin{align}
- \ell(q,x)&=\operatorname{MLP}([q;x;|q-x|]),\\
- C(q,x)&=\operatorname{sigmoid}(\ell(q,x)).
+ \phi(q,x)&=[z(q);z(x);|z(q)-z(x)|]\in\mathbb{R}^{2304},\\
+ \ell_\theta(q,x)&=\operatorname{MLP}_\theta(\phi(q,x)),\\
+ C(q,x)&=\sigma(\ell_\theta(q,x)).
 \end{align}
-MLP có kích thước $2304\rightarrow512\rightarrow128\rightarrow1$, ReLU
-và dropout 0.1 sau hai hidden layers. Random swap xác suất 50\% chỉ là
-training augmentation; không dùng bidirectional averaging khi inference.
+MLP có ba lớp tuyến tính $2304\rightarrow512\rightarrow128\rightarrow1$,
+ReLU và dropout 0,1 sau hai hidden layers, tổng cộng \num{1245953} tham số.
+Khi truy xuất, ảnh truy vấn luôn đứng trước ảnh ứng viên trong đầu vào MLP.
+Trong quá trình train, hai ảnh được đổi vị trí ngẫu nhiên với xác suất 50\%
+để tăng số trường hợp huấn luyện; khi đánh giá không lấy trung bình hai chiều.
+Pair-wise Confidence dùng $C(q,x)$ để sắp lại Top-100 của DINOv3 Baseline.
 
-Mỗi fit query có 16 positives cùng class, 8 hard negatives và 8 random
-negatives khác class mỗi epoch: 149,984 ordered pairs, tỷ lệ positive/negative
-1:1. Hard negatives được mine \textbf{static một lần} từ frozen M1 cosine
-Top-100 trên fit; không online update bằng learned score.
-Training dùng BCEWithLogitsLoss, AdamW, LR $10^{-4}$, weight decay $10^{-4}$,
-cosine scheduler, clipping 5.0, 30 epochs và global batch 4,096.
-Seed 42 thống nhất initialization, sampling và training; pair head dùng FP32,
-DDP một process mỗi T4. Giữ checkpoint fit-trained cho benchmark, không
-refit pair head trên toàn development.
+Với nhãn $y_i\in\{0,1\}$, mạng được train bằng Binary Cross Entropy:
+\begin{equation}
+ \mathcal{L}_{\mathrm{pair}}=-\frac{1}{B}\sum_{i=1}^{B}
+ \left[y_i\log\sigma(\ell_i)+(1-y_i)\log(1-\sigma(\ell_i))\right].
+\end{equation}
+Trong mỗi epoch, mỗi ảnh truy vấn của tập train tạo 16 positive pairs cùng
+lớp, 8 negative pairs gần nhất theo cosine và 8 negative pairs ngẫu nhiên
+khác lớp. Danh sách negative pairs gần nhất được tạo một lần từ DINOv3
+Baseline Top-100 và giữ nguyên trong quá trình train. Mỗi epoch có 149.984
+cặp ảnh, trong đó số positive và negative pairs bằng nhau.
 
-\section{Selection, fusion và controls}
+\subsection{Fusion Cosine + Confidence}
+Fusion Cosine + Confidence sắp lại Top-100 của DINOv3 Baseline theo điểm
+\begin{equation}
+ S_{\lambda}(q,x)=\lambda s_{\cos}(q,x)+(1-\lambda)C(q,x).
+\end{equation}
+Điểm cosine và confidence được dùng trực tiếp trong công thức. Ảnh ngoài
+Top-100 không được đưa vào. Nếu hai ảnh có cùng điểm, thứ tự cosine ban đầu
+được giữ nguyên. Khi $\lambda=1$, kết quả phải giống DINOv3 Baseline.
 
-Checkpoint được chọn bằng natural-candidate validation BCE thấp nhất;
-tie chọn earliest epoch. Validation gồm toàn bộ 117,700 ordered Top-100
-pairs, không balanced resampling. Checkpoint thắng là epoch 19,
-BCE = 0.3464334. Sau đó chọn fusion coefficient trên validation:
-\[
- S(q,x)=\lambda\cos(q,x)+(1-\lambda)C(q,x),\qquad
- \lambda\in\{0,0.25,0.5,0.75,0.9,1\}.
-\]
-Tie rule: integer Hits@1 $\rightarrow$ Hits@2 $\rightarrow$ Hits@4
-$\rightarrow$ Hits@8 $\rightarrow$ larger $\lambda$.
-Giá trị khóa là $\lambda=0.75$, $N=100$. Chỉ reorder cosine Top-100;
-stable ties giữ thứ tự cosine ban đầu. Không min-max normalize scores.
-Checkpoint, grid và control hashes được lưu trong tuning record
-\texttt{selection.json}; benchmark không chọn lại epoch hoặc coefficient.
+\subsection{Evidential Embedding và Image Uncertainty Reranking}
+EDL head sinh evidence, $\alpha$ và uncertainty:
+\begin{equation}
+ \alpha_k(x)=e_k(x)+1,\qquad
+ u(x)=\frac{K}{\sum_{k=1}^{K}\alpha_k(x)},\qquad K=100.
+\end{equation}
+Hai nhánh so sánh evidential được định nghĩa trong tài liệu E2B:
+\begin{itemize}
+ \item \textbf{Image Uncertainty Reranking:} sắp $N$ ảnh ứng viên đầu của
+ DINOv3 Baseline theo $u(x)$ tăng dần. Để so sánh cùng điều kiện với
+ Pair-wise Confidence, kết quả chính cố định $N=100$.
+ \item \textbf{Evidential Embedding:} sử dụng trực tiếp $\alpha$-embeddings theo
+ cách biểu diễn của Evidential Transformers \cite{dordevic2024evidential},
+ $d_{\alpha}(q,x)=\lVert\alpha(q)-\alpha(x)\rVert_2$, xếp tăng dần trên toàn
+ gallery. Nhánh này paper-faithful về representation/distance, nhưng
+ hệ thống vẫn là DINOv3 adaptation.
+\end{itemize}
+Embedding E1 cũ không được trích xuất từ đúng DINOv3 embedding đang dùng nên
+không được ghép trực tiếp vào E2B. EDL head được train lại trên CLS embedding
+của E2A. Image Uncertainty trong bảng kết quả chính dùng EDL head chỉ train
+trên 4.687 ảnh, giống số ảnh train của Pair-wise Confidence. EDL head train
+trên toàn bộ 5.864 ảnh development chỉ được dùng cho Evidential Embedding.
 
-Các controls dùng EDL heads retrain trên raw CLS của \emph{cùng accepted
-M1 cache}, thay vì ghép historical E1 cache khác provenance. Tuning head
-train fit-only; final head train toàn development, không train benchmark.
-Đây là khác biệt về dữ liệu fit của controls so với pair head, cần lưu ý
-khi diễn giải; không phải ablation chỉ thay similarity.
-EDL dùng $\alpha=e+1$, $u=100/\sum_j\alpha_j$ và certainty score $1-u$.
-U1 sort tăng dần candidate uncertainty trong Top-$N$; validation chọn
-$N=10$ từ $\{10,20,50,100\}$. A1 dùng raw $\alpha$ 100 chiều và Euclidean
-L2 trên full gallery; A2 dùng normalized $\alpha$ và cosine.
-A1 giữ representation/distance của Evidential Transformers nhưng toàn
-hệ thống là frozen-DINOv3 adaptation, không phải faithful reproduction.
+Để so sánh trực tiếp Image Uncertainty với Pair-wise Confidence, thí nghiệm
+bổ sung dùng hai mô hình chỉ train trên cùng 4.687 ảnh. Hai phương pháp nhận
+cùng các ảnh ứng viên tại $N\in\{10,20,50,100\}$. Chỉ Top-$N$ được sắp lại;
+các vị trí còn lại giữ thứ tự cosine. Các confidence scores đã lưu được dùng
+lại; EDL head chỉ chạy dự đoán trên tập kiểm tra, không train lại.
 
-\section{Kết quả retrieval}
+\section{Thiết lập thực nghiệm}
+CUB-200-2011 có 200 lớp và 11.788 ảnh \cite{wah2011cub}. Tập development
+gồm 5.864 ảnh classes 0--99; tập kiểm tra gồm 5.924 ảnh classes 100--199.
+Tập development được chia 80/20 theo từng lớp với seed 42 thành 4.687 ảnh
+train và 1.177 ảnh validation. Hai tập này cùng dùng classes 0--99; tập kiểm
+tra dùng classes 100--199 chưa xuất hiện khi train. Mỗi ảnh lần lượt làm ảnh
+truy vấn và được loại khỏi danh sách kết quả của chính nó.
 
-\begin{table}[ht]
+Backbone là \texttt{facebook/dinov3-vitb16-pretrain-lvd1689m}, revision
+\texttt{5931719e67bbdb9737e363e781fb0c67687896bc}, ảnh $224\times224$.
+Mạng Pair-wise Confidence được train FP32 trong 30 epoch bằng AdamW, learning
+rate $10^{-4}$, weight decay $10^{-4}$, cosine scheduler, giới hạn gradient
+5,0 và batch size tổng 4.096 trên hai Tesla T4. Seed 42 được dùng thống nhất;
+DINOv3 được giữ nguyên trong toàn bộ quá trình.
+
+\begin{table}[htbp]
 \centering
-\caption{Validation Recall (\%), 1,177 queries.}
-\begin{tabular}{lrrrr}
-\toprule Method & R@1 & R@2 & R@4 & R@8\\
-\midrule
-M1 cosine & 83.5174 & 88.9550 & 93.5429 & 96.4316\\
-Pair-only & 80.0340 & 87.5106 & 92.2685 & 96.1767\\
-Fusion & 85.5565 & 90.1444 & 93.6279 & 97.0263\\
-U1 & 61.5123 & 77.2302 & 89.2948 & 96.9414\\
-A1 & 40.2719 & 47.4936 & 56.4146 & 64.6559\\
-A2 & 26.9329 & 32.3704 & 40.5268 & 48.7681\\
+\caption{Thiết lập E2B đã thực thi.}
+\begin{tabular}{@{}ll@{}}
+\toprule Thành phần & Giá trị\\ \midrule
+Embedding & M1 final CLS, 768 chiều, chuẩn hóa L2\\
+Đầu vào MLP & $[z(q);z(x);|z(q)-z(x)|]$\\
+Pair MLP & $2304\rightarrow512\rightarrow128\rightarrow1$\\
+Số cặp/ảnh/epoch & 16 positive + 8 negative gần nhất + 8 negative ngẫu nhiên\\
+Negative pairs gần nhất & Chọn một lần từ DINOv3 cosine Top-100 trên train\\
+Checkpoint được chọn & Epoch 19, validation BCE 0,3464334\\
+Top-$N$ được sắp lại & $N=100$ cho Image Uncertainty, Pair-wise Confidence và Fusion\\
+Fusion coefficient & $\lambda=0{,}75$\\
+Đánh giá & Recall@1/2/4/8, loại chính ảnh truy vấn\\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\begin{table}[ht]
+Checkpoint được chọn theo Binary Cross Entropy thấp nhất trên 117.700 cặp
+ảnh validation; nếu bằng nhau thì chọn epoch sớm hơn. Sau đó chọn
+$\lambda\in\{0;0{,}25;0{,}5;0{,}75;0{,}9;1\}$ theo integer Hits@1
+$\rightarrow$ Hits@2 $\rightarrow$ Hits@4 $\rightarrow$ Hits@8
+$\rightarrow$ $\lambda$ lớn hơn. Tập kiểm tra chỉ dùng checkpoint và
+$\lambda$ đã chọn từ validation.
+
+\section{Kết quả}
+\subsection{Lựa chọn trên validation}
+\begin{table}[htbp]
 \centering
-\caption{Benchmark Recall (\%), 5,924 queries thuộc classes 100--199.}
-\begin{tabular}{lrrrrr}
-\toprule Method & Hits@1 & R@1 & R@2 & R@4 & R@8\\
-\midrule
-M1 cosine & 5,213 & 87.9980 & 92.7583 & 95.2566 & 97.0122\\
-Pair-only & 4,673 & 78.8825 & 88.5213 & 93.7205 & 96.4382\\
-Fusion & 5,214 & 88.0149 & 92.7920 & 95.3579 & 97.0628\\
-U1 & 4,751 & 80.1992 & 88.5719 & 93.9568 & 96.8265\\
-A1 & 1,847 & 31.1783 & 41.9311 & 52.9878 & 64.3653\\
-A2 & 1,564 & 26.4011 & 35.7529 & 47.7549 & 59.1323\\
+\caption{Recall trên 1.177 validation queries (\%).}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule Phương pháp & R@1 & R@2 & R@4 & R@8\\ \midrule
+DINOv3 Baseline & 83,5174 & 88,9550 & 93,5429 & 96,4316\\
+Evidential Embedding & 40,2719 & 47,4936 & 56,4146 & 64,6559\\
+Image Uncertainty Reranking & 8,0714 & 13,5089 & 22,0901 & 38,6576\\
+Pair-wise Confidence & 80,0340 & 87,5106 & 92,2685 & 96,1767\\
+Fusion Cosine + Confidence & \textbf{85,5565} & \textbf{90,1444} & 93,6279 & \textbf{97,0263}\\
+\bottomrule
+\end{tabular}
+\end{table}
+Fusion đạt 1.007 Hits@1, cao hơn baseline 24 ảnh truy vấn (+2,0391 điểm phần trăm),
+nên validation chọn $\lambda=0{,}75$. $\lambda=0$ chính là Pair-wise
+Confidence và đạt 942 Hits@1; $\lambda=1$ tái tạo baseline với 983 Hits@1.
+Image Uncertainty Reranking giữ cố định $N=100$ để dùng cùng số ảnh ứng viên
+với Pair-wise Confidence và Fusion.
+
+\subsection{Kết quả trên tập kiểm tra}
+\begin{table}[htbp]
+\centering
+\caption{Recall của năm phương pháp trên 5.924 ảnh truy vấn thuộc classes
+100--199 (\%). Image Uncertainty, Pair-wise Confidence và Fusion đều dùng
+$N=100$. Hai mô hình uncertainty và confidence đều chỉ train trên 4.687 ảnh.}
+\label{tab:e2b-results}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule Phương pháp & R@1 & R@2 & R@4 & R@8\\ \midrule
+DINOv3 Baseline & 87,9980 & 92,7583 & 95,2566 & 97,0122\\
+Evidential Embedding & 31,1783 & 41,9311 & 52,9878 & 64,3653\\
+Image Uncertainty Reranking & 27,3970 & 41,3741 & 57,2417 & 73,9028\\
+Pair-wise Confidence & 78,8825 & 88,5213 & 93,7205 & 96,4382\\
+Fusion Cosine + Confidence & \textbf{88,0149} & \textbf{92,7920} & \textbf{95,3579} & \textbf{97,0628}\\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Fusion tăng 24 Hits@1 trên validation (+2.0391 điểm phần trăm), nhưng
-chỉ tăng một trên unseen-class benchmark. Cosine Top-100 chứa ít nhất một
-positive cho 99.3923\% benchmark queries; đây là candidate coverage, không
-phải Recall@1 hay accuracy của pair model. Pair-only là candidate-constrained
-reranking, không phải exhaustive learned retrieval.
-
-\begin{table}[ht]
+\begin{table}[htbp]
 \centering
-\caption{Fusion trừ cosine: paired query bootstrap, 2,000 samples,
-95\% percentile intervals. Đơn vị: điểm phần trăm.}
-\begin{tabular}{lrrr}
-\toprule Metric & Delta & Lower & Upper\\
-\midrule
-R@1 & +0.0169 & -0.3038 & +0.3376\\
-R@2 & +0.0338 & -0.2363 & +0.3038\\
-R@4 & +0.1013 & -0.1182 & +0.3038\\
-R@8 & +0.0506 & -0.1350 & +0.2363\\
+\caption{Chênh lệch Fusion--Baseline và khoảng 95\% từ 2.000 lần lấy mẫu lại;
+đơn vị điểm phần trăm.}
+\begin{tabular}{@{}lrrr@{}}
+\toprule Recall & Chênh lệch & Cận dưới & Cận trên\\ \midrule
+R@1 & +0,0169 & -0,3038 & +0,3376\\
+R@2 & +0,0338 & -0,2363 & +0,3038\\
+R@4 & +0,1013 & -0,1182 & +0,3038\\
+R@8 & +0,0506 & -0,1350 & +0,2363\\
 \bottomrule
 \end{tabular}
 \end{table}
-Các intervals đều chứa 0. Bootstrap chỉ là exploratory query-level
-uncertainty, không đo seed variance, không khắc phục selection bias hay
-sự phụ thuộc giữa queries cùng class/shared gallery.
+Fusion có 5.214 Hits@1 so với 5.213 của baseline: sửa 47 ảnh truy vấn sai
+thành đúng nhưng làm 46 ảnh đúng thành sai. Tất cả các khoảng 95\% đều chứa
+0 nên chênh lệch một ảnh chưa đủ để khẳng định cải thiện. Top-100 của
+DINOv3 Baseline chứa ít nhất một ảnh đúng lớp cho 99,3923\% ảnh truy vấn.
 
-\section{Confidence và calibration}
+\subsection{So sánh công bằng với cùng Top-N}
 
-\begin{table}[ht]
+So sánh này giữ cùng hai điều kiện: mỗi mô hình chỉ train trên 4.687 ảnh và
+hai phương pháp nhận đúng cùng danh sách ảnh ứng viên từ cosine. Không mô
+hình nào được train lại. Bảng~\ref{tab:matched-topn} trình bày đầy đủ bốn
+giá trị $N$, không chỉ lấy kết quả tốt nhất trên tập kiểm tra.
+
+\begin{table}[htbp]
 \centering
-\caption{Dự đoán correctness của \emph{cùng cosine Top-1 candidate},
-5,924 queries. AUROC/AUPRC cao hơn tốt hơn; ECE/Brier/AURC thấp hơn tốt hơn.}
-\begin{tabular}{lrrrrr}
-\toprule Score & AUROC & AUPRC & ECE & Brier & AURC\\
+\caption{So sánh cùng Top-$N$ trên validation: Recall@1 (\%).}
+\begin{tabular}{@{}rrr@{}}
+\toprule
+$N$ & Image Uncertainty & Pair-wise Confidence\\
 \midrule
-Mapped cosine $(s+1)/2$ & 0.6751 & 0.9300 & 0.0210 & 0.1016 & 0.0716\\
-Pair confidence & 0.6283 & 0.9239 & 0.0833 & 0.1114 & 0.0776\\
-Image certainty $1-u$ & 0.5790 & 0.9051 & 0.8525 & 0.8321 & 0.0954\\
+10  & 61,5123 & \textbf{83,6873}\\
+20  & 39,7621 & \textbf{82,3280}\\
+50  & 18,9465 & \textbf{81,5633}\\
+100 & 8,0714  & \textbf{80,0340}\\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Pair confidence tốt hơn image certainty nhưng \textbf{không tốt hơn mapped
-cosine} trong các metrics trên. Mapped cosine là fixed score transform,
-không phải learned probability calibration. ECE dùng 10 bins; certainty
-không được giả định là xác suất class-match nên calibration metrics của
-nó chỉ là diagnostic. AUPRC cần đọc cùng positive prevalence 87.9980\%.
+\begin{table}[htbp]
+\centering
+\caption{So sánh cùng Top-$N$ trên tập kiểm tra (\%). Cả hai mô hình chỉ
+train trên tập train và dùng cùng danh sách ảnh ứng viên tại từng $N$.}
+\label{tab:matched-topn}
+\begin{tabular}{@{}rllrrrr@{}}
+\toprule
+$N$ & Phương pháp & Hits@1 & R@1 & R@2 & R@4 & R@8\\
+\midrule
+10 & Image Uncertainty & 4.759 & 80,3342 & 88,7745 & 94,1762 & 96,8771\\
+10 & Pair-wise Confidence & 5.022 & \textbf{84,7738} & \textbf{91,7286} & \textbf{95,2903} & \textbf{97,1134}\\
+20 & Image Uncertainty & 4.359 & 73,5820 & 84,2167 & 91,9480 & 96,1344\\
+20 & Pair-wise Confidence & 4.953 & \textbf{83,6090} & \textbf{91,1715} & \textbf{95,0203} & \textbf{97,0628}\\
+50 & Image Uncertainty & 3.197 & 53,9669 & 67,0831 & 80,9419 & 91,2053\\
+50 & Pair-wise Confidence & 4.809 & \textbf{81,1783} & \textbf{89,6523} & \textbf{94,1425} & \textbf{96,8265}\\
+100 & Image Uncertainty & 1.623 & 27,3970 & 41,3741 & 57,2417 & 73,9028\\
+100 & Pair-wise Confidence & 4.673 & \textbf{78,8825} & \textbf{88,5213} & \textbf{93,7205} & \textbf{96,4382}\\
+\bottomrule
+\end{tabular}
+\end{table}
 
-Trên 592,400 natural Top-100 pairs, pair model đạt AUROC 0.7049,
-AUPRC 0.6357, ECE 0.3689 và Brier 0.3645; positive prevalence 42.2091\%.
-Balanced mined training khác phân phối candidate evaluation, nên sigmoid
-chưa được chứng minh là calibrated probability. Không so trực tiếp metrics
-của toàn candidate pool với Top-1 pool như thể cùng bài toán.
-Mean absolute swap disagreement là 0.0078924, chỉ dùng diagnostic;
-không thay orientation đã preregister sau khi xem benchmark.
+\begin{table}[htbp]
+\centering
+\caption{Chênh lệch Recall@1 của Pair-wise Confidence trừ Image Uncertainty
+và khoảng 95\% từ 2.000 lần lấy mẫu lại; đơn vị điểm phần trăm.}
+\begin{tabular}{@{}rrrr@{}}
+\toprule
+$N$ & Chênh lệch & Cận dưới & Cận trên\\
+\midrule
+10  & +4,4396  & +3,4601  & +5,4862\\
+20  & +10,0270 & +8,9635  & +11,1757\\
+50  & +27,2113 & +25,7596 & +28,6293\\
+100 & +51,4855 & +50,0671 & +52,8697\\
+\bottomrule
+\end{tabular}
+\end{table}
 
-\section{Artifacts, xác minh và tái lập}
+Pair-wise Confidence cao hơn Image Uncertainty ở mọi $N$ và mọi Recall được
+xét. Chênh lệch tăng theo $N$ vì uncertainty chỉ mô tả từng ảnh riêng lẻ,
+không so sánh ảnh ứng viên với ảnh truy vấn. Khi sắp lại nhiều ảnh hơn, các
+ảnh có uncertainty thấp nhưng khác lớp dễ được đưa lên đầu. Tuy nhiên, ngay
+cả Pair-wise Confidence tốt nhất trong bảng ($N=10$, R@1 84,7738\%) vẫn thấp
+hơn DINOv3 Baseline 3,2242 điểm phần trăm. $N=100$ là thiết lập so sánh chính
+vì Pair-wise Confidence ban đầu dùng Top-100; các giá trị còn lại cho thấy
+ảnh hưởng khi thay đổi $N$.
 
-Nguồn số liệu là \texttt{outputs/e2b\_pair\_confidence/seed\_42/}:
-\texttt{metrics/}, \texttt{selection.json}, \texttt{scores/},
-\texttt{rankings/}, \texttt{controls/}, \texttt{failure\_cases/} và
-\texttt{export/}. Portable manifests đã được kiểm tra: 20 required-artifact
-entries khớp SHA-256 ở cả thư mục gốc và export. Cache nguồn khớp provenance;
-inference subset 1,600 pairs mỗi split khớp saved logits/cosine với sai số
-dưới $1.5\times10^{-6}$. Kiểm tra này không thay thế full training/DDP rerun.
+\section{Phân tích}
+\subsection{Khác biệt giữa validation và tập kiểm tra}
+Fusion tăng R@1 2,0391 điểm trên validation nhưng chỉ 0,0169 điểm trên tập
+kiểm tra. Validation dùng classes 0--99 giống tập train, trong khi tập kiểm
+tra dùng classes 100--199 chưa xuất hiện khi train. Vì vậy, Pair-wise
+Confidence hoạt động tốt hơn trên các lớp đã gặp so với các lớp mới.
 
-Run thực tế dùng Python 3.12.13, PyTorch 2.10.0+cu128, CUDA 12.8 và hai
-Tesla T4. Environment ghi Git commit
-\texttt{a860d9e9bdb16238c3698bb67ae7d12ead1c3f38}, dirty worktree;
-commit đơn lẻ vì vậy không đủ tái dựng source chính xác.
-Checkpoint SHA-256 được khóa trong selection và export manifests.
-Lệnh full workflow từ repository root:
-\begin{verbatim}
-python scripts/run_e2b.py --config configs/cub_e2b.yaml --stage validation
-python scripts/run_e2b.py --config configs/cub_e2b.yaml --stage test
-\end{verbatim}
+\subsection{Pair-wise Confidence và cosine}
+Pair-wise Confidence thấp hơn DINOv3 Baseline 9,1155 điểm R@1. Binary Cross
+Entropy dạy mô hình phân biệt cặp cùng lớp và khác lớp, nhưng không trực tiếp
+dạy thứ tự của tất cả ảnh ứng viên cho từng ảnh truy vấn. Fusion giữ 75\%
+điểm cosine nên tránh phần lớn mức giảm, nhưng confidence score gần như không
+tạo thêm kết quả đúng.
 
-\section{Giới hạn và kết luận}
+\subsection{Evidential Embedding và Image Uncertainty}
+Trong bảng năm phương pháp, Image Uncertainty và Pair-wise Confidence đều
+dùng $N=100$ và cùng số ảnh train. Pair-wise Confidence cao hơn Image
+Uncertainty 51,4855 điểm R@1. Kết quả tại $N=10,20,50$ cũng giữ cùng xu
+hướng. Điều này cho thấy confidence score của một cặp ảnh phù hợp hơn
+uncertainty của từng ảnh riêng lẻ, nhưng vẫn chưa vượt cosine. Evidential
+Embedding giảm mạnh hơn;
+$\alpha$-embedding 100 chiều chưa giữ được chất lượng truy hồi của CLS
+embedding trong thực nghiệm này. Kết luận chỉ áp dụng cho cấu hình đã chạy.
 
-Fit/validation cùng classes 0--99 nên validation chưa đánh giá trực tiếp
-class-generalization sang classes 100--199. Một seed không cho phép kết luận
-về độ ổn định training. Benchmark đã được sử dụng ở E2A; không tuyên bố
-unbiased final-test performance. Top-100 cố định giới hạn reranking;
-confidence chưa calibrated và controls không hoàn toàn đồng nhất fit budget.
+\section{Kết quả đã lưu và khả năng chạy lại}
+Checkpoint, confidence scores, danh sách xếp hạng, Recall@K và các trường hợp
+truy xuất sai được lưu tại
+\texttt{outputs/e2b\_pair\_confidence/seed\_42/}. Có 20 file bắt buộc của
+validation và tập kiểm tra; mã kiểm tra SHA-256 xác nhận các file không bị
+thay đổi. Kiểm tra lại 1.600 cặp ảnh trên mỗi tập cho sai số giữa kết quả tính
+lại và kết quả đã lưu nhỏ hơn $1{,}5\times10^{-6}$.
 
-Trong run đã nghiệm thu, \textbf{M1 cosine vẫn là baseline mạnh}; fusion
-gần như giữ nguyên performance, còn pair-only làm giảm Recall@1.
-Không coi delta dương rất nhỏ là thành công chắc chắn. Các bước sau nếu
-thực hiện cần được lập protocol riêng: class-disjoint validation,
-multi-seed evaluation, calibration trên development và controlled sampling
-ablations; không điều chỉnh phương pháp trực tiếp từ benchmark hiện tại.
+Kết quả so sánh cùng Top-$N$ được lưu riêng tại
+\texttt{matched\_topn/}, gồm kết quả validation, tập kiểm tra, 16 file xếp
+hạng và bảng tổng hợp. Tổng cộng 22 file đã được kiểm tra SHA-256. Bốn unit
+tests xác nhận chỉ Top-$N$ bị sắp lại, các vị trí còn lại không đổi, hai
+phương pháp dùng cùng ảnh ứng viên và thứ tự bằng điểm giữ nguyên cosine.
 
-\section{Method lineage}
+Run dùng Python 3.12.13, PyTorch 2.10.0+cu128, CUDA 12.8 và hai Tesla T4.
+Mã nguồn tại thời điểm chạy ghi commit
+\texttt{a860d9e9bdb16238c3698bb67ae7d12ead1c3f38}, nhưng thư mục còn thay đổi
+chưa commit. Vì vậy cần giữ cả các file kết quả và cấu hình, không chỉ commit,
+để chạy lại đúng thực nghiệm.
 
-EDL: \href{https://arxiv.org/abs/1806.01768v3}{Sensoy et al.,
-Evidential Deep Learning, arXiv:1806.01768v3}, Dirichlet evidence,
-$\alpha=e+1$ và $u=K/\sum\alpha$.
-Alpha retrieval control: \href{https://arxiv.org/abs/2409.01082v2}{Evidential
-Transformers, arXiv:2409.01082v2}. E2B pair MLP, static sampling và raw-score
-fusion là implementation/experimental design của repository; không gán
-chúng là official implementation của các bài báo trên.
+\section{Giới hạn}
+Thực nghiệm chỉ chạy với seed 42 nên chưa đánh giá được mức thay đổi giữa
+nhiều lần train. Train và validation cùng dùng classes 0--99, do đó kết quả
+validation có thể cao hơn kết quả trên các lớp mới. Classes 100--199 đã được
+dùng để chọn CLS embedding trong E2A, nên đây không còn là tập kiểm tra hoàn
+toàn chưa được xem. Pair-wise Confidence và Fusion chỉ sắp lại Top-100 của
+cosine, không tìm lại trên toàn bộ ảnh. EDL head của Evidential Embedding
+được train trên toàn bộ development, trong khi Image Uncertainty và
+Pair-wise Confidence chỉ train trên tập train. So sánh cùng Top-$N$ được thực
+hiện sau khi kết quả chính đã được xem.
+
+\section{Kết luận}
+E2B đã học confidence score cho từng cặp ảnh và kết hợp score này với cosine.
+Fusion Cosine + Confidence đạt Recall@1
+\SI{88.0149}{\percent}, chỉ cao hơn DINOv3 Baseline
+\SI{87.9980}{\percent} đúng một ảnh truy vấn; khoảng 95\% chưa cho thấy mức
+tăng rõ ràng. Evidential Embedding, Image Uncertainty Reranking và Pair-wise
+Confidence đều không vượt baseline. Do đó DINOv3 Baseline vẫn là lựa chọn
+thực nghiệm chính. So sánh cùng Top-$N$ và cùng tập train cho thấy Pair-wise
+Confidence tốt hơn Image Uncertainty, nhưng không thay đổi kết luận chính vì
+cả hai đều thấp hơn cosine. Các thực nghiệm tiếp theo nên dùng validation có
+class khác train, chạy nhiều seed và chỉ đánh giá một lần trên tập kiểm tra
+mới chưa được dùng để chọn phương pháp.
+
+\begin{thebibliography}{9}
+\bibitem{simeoni2025dinov3}
+O. Siméoni, H. V. Vo, M. Seitzer, và cộng sự,
+DINOv3, arXiv:2508.10104, 2025.
+\bibitem{wah2011cub}
+C. Wah, S. Branson, P. Welinder, P. Perona, và S. Belongie,
+The Caltech-UCSD Birds-200-2011 Dataset, CNS-TR-2011-001, 2011.
+\bibitem{sensoy2018edl}
+M. Sensoy, L. Kaplan, và M. Kandemir,
+Evidential Deep Learning to Quantify Classification Uncertainty,
+NeurIPS, tập 31, 2018.
+\bibitem{dordevic2024evidential}
+D. Dordevic và S. Kumar,
+Evidential Transformers for Improved Image Retrieval,
+ECCV Workshop on Uncertainty Quantification for Computer Vision, 2024.
+\end{thebibliography}
 
 \end{document}

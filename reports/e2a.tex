@@ -1,197 +1,290 @@
 \documentclass[11pt,a4paper]{article}
-\usepackage[utf8]{inputenc}
+\usepackage[a4paper,top=2.5cm,bottom=2.5cm,left=3cm,right=2.5cm]{geometry}
 \usepackage[T5]{fontenc}
+\usepackage[utf8]{inputenc}
 \usepackage[vietnamese]{babel}
-\usepackage{lmodern}
-\usepackage[margin=2.5cm]{geometry}
-\usepackage{amsmath}
-\usepackage{booktabs}
+\usepackage{amsmath,amssymb,booktabs,array,microtype,siunitx,enumitem,caption}
+\usepackage{setspace,titlesec,fancyhdr}
 \usepackage[hidelinks]{hyperref}
-\title{Báo cáo thực nghiệm E2A\\So sánh Representation Pipelines của Frozen DINOv3}
-\author{}
-\date{15 tháng 9 năm 2026}
+\sisetup{output-decimal-marker={,}}
+\setlist{nosep}
+\setstretch{1.18}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{6pt plus 1pt minus 1pt}
+\renewcommand{\arraystretch}{1.18}
+\captionsetup{font=small,labelfont=bf,labelsep=period,justification=centering}
+\titleformat{\section}{\large\bfseries}{\thesection.}{0.6em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection.}{0.6em}{}
+\titlespacing*{\section}{0pt}{16pt}{7pt}
+\titlespacing*{\subsection}{0pt}{11pt}{5pt}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small Báo cáo thực nghiệm E2A}
+\fancyhead[R]{\small DINOv3 Feature Representation Analysis}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\abstractname}{Tóm tắt}
+
+\title{\bfseries\LARGE So sánh phương pháp tạo embedding ảnh\\[0.3em]
+từ DINOv3}
+\author{Báo cáo thực nghiệm E2A}
+\date{17 tháng 9 năm 2026}
+
 \begin{document}
 \maketitle
+\thispagestyle{plain}
 
-\section{Tóm tắt và quyết định}
+\begin{abstract}
+E2A so sánh bốn phương pháp tạo embedding từ DINOv3 ViT-B/16 cho truy hồi
+ảnh trên CUB-200-2011: CLS Token, Mean Patch Pooling, CLS + Mean Patch Fusion
+và Attention Pooling. DINOv3 được giữ nguyên trong cả bốn phương pháp.
+M1 và M2 không cần train; M3 và M4 được train bằng Proxy Anchor trên classes
+0--99. Theo quy tắc lựa chọn đã dùng trong thực nghiệm, cả bốn phương pháp
+được chạy trên 5.924 ảnh classes 100--199 và phương pháp có Hits@1 cao nhất
+được chọn. M1 đạt 5.213 Hits@1, tương ứng Recall@1
+\SI{87.9980}{\percent}, cao hơn M3 42 ảnh truy vấn. Vì vậy M1 final CLS
+được chọn làm embedding đầu vào cho E2B.
 
-E2A so sánh bốn representation pipelines cho fine-grained image retrieval
-trên CUB-200-2011 trước khi xây dựng pair-wise confidence learning ở E2B.
-Theo protocol đã sửa để chọn phương pháp trên classes 100--199,
-\textbf{M1 (final CLS token) là winner}: Hits@1 = 5,214/5,924 và
-Recall@1 = 88.0149\%. M3 đạt 5,171 Hits@1, thấp hơn M1 43 queries,
-tương đương 0.7259 điểm phần trăm. Không cần tie breaker.
-Đây là \textbf{test-based method selection}, không phải kết quả trên
-final test độc lập chưa từng được dùng để chọn phương pháp.
+\noindent\textbf{Từ khóa:} DINOv3, CLS Token, Patch Token, Attention Pooling,
+Cosine Similarity, Recall@K.
+\end{abstract}
 
-\section{Thiết lập và phương pháp}
+\section{Giới thiệu}
+DINOv3 tạo nhiều loại token có thể dùng làm embedding ảnh. CLS Token tóm tắt
+toàn bộ ảnh, trong khi Patch Tokens lưu đặc trưng của từng vùng ảnh. E2A kiểm
+tra liệu việc lấy trung bình Patch Tokens hoặc học cách kết hợp các token có
+cải thiện kết quả truy hồi so với CLS Token hay không.
 
-Backbone frozen DINOv3 ViT-B/16, embedding 768 chiều, checkpoint
-\texttt{facebook/dinov3-vitb16-pretrain-lvd1689m}, revision
-\texttt{5931719e67bbdb9737e363e781fb0c67687896bc}.
-Processor dùng ảnh 224$\times$224 và ImageNet mean/std theo cache manifest.
-Có 4 register tokens và 196 final-layer patch tokens; register tokens không
-tham gia patch pooling. E2A không dùng EDL, uncertainty hay reranking.
+Mục tiêu của E2A là chọn một embedding trước khi xây dựng uncertainty và
+Pair-wise Confidence trong các thực nghiệm sau. Vì vậy E2A chỉ dùng embedding,
+Cosine Similarity và Recall@K; không sử dụng uncertainty hoặc reranking.
 
-Development gồm 5,864 ảnh classes 0--99, stratified image-level 80/20 với
-seed 42: 4,687 fit và 1,177 validation. Test selection gồm 5,924 ảnh thuộc
-unseen classes 100--199. Không dùng official image-level split của CUB.
-Query và gallery là cùng tập trong mỗi split; self-match loại bằng image ID.
-Evaluator dùng L2 normalization, exact cosine similarity, stable
-gallery-index tie breaking và Recall@1/2/4/8; lưu Top-100 candidate IDs/scores.
+\section{Phương pháp}
+\subsection{DINOv3 và cách tính độ tương đồng}
+Với ảnh $x$, DINOv3 ViT-B/16 tạo một CLS Token $c(x)$ và 196 Patch Tokens
+$p_i(x)$, mỗi token có 768 chiều. Có thêm 4 Register Tokens nhưng chúng không
+được dùng khi lấy trung bình Patch Tokens. Mỗi embedding $z(x)$ được chuẩn hóa
+L2 trước khi tính Cosine Similarity:
+\begin{equation}
+ \widehat z(x)=\frac{z(x)}{\lVert z(x)\rVert_2},
+ \qquad s(q,x)=\widehat z(q)^\top\widehat z(x).
+\end{equation}
+Ảnh có điểm cosine cao hơn được xếp trước.
 
-Gọi $c$ là CLS, $p_i$ là patch token và $\bar p$ là patch mean:
+\subsection{M1 --- CLS Token}
+M1 dùng trực tiếp CLS Token của lớp cuối cùng:
+\begin{equation}
+ z_{M1}(x)=c(x)\in\mathbb{R}^{768}.
+\end{equation}
+Phương pháp này không có tham số cần train và được dùng làm baseline.
+
+\subsection{M2 --- Mean Patch Pooling}
+M2 lấy trung bình 196 Patch Tokens của lớp cuối cùng:
+\begin{equation}
+ z_{M2}(x)=\overline p(x)=\frac{1}{196}\sum_{i=1}^{196}p_i(x).
+\end{equation}
+M2 cũng không có tham số cần train. Register Tokens không tham gia phép tính.
+
+\subsection{M3 --- CLS + Mean Patch Fusion}
+M3 ghép CLS Token và Mean Patch, sau đó dùng một lớp chiếu để đưa vector
+1.536 chiều về embedding 768 chiều:
+\begin{equation}
+ z_{M3}(x)=W[c(x);\overline p(x)]+b.
+\end{equation}
+Lớp chiếu được train bằng Proxy Anchor; DINOv3 vẫn được giữ nguyên.
+
+\subsection{M4 --- Attention Pooling}
+M4 học một trọng số cho mỗi Patch Token rồi tính tổng có trọng số:
 \begin{align}
-\text{M1:}\quad z &= c,\\
-\text{M2:}\quad z &= \bar p=\frac{1}{196}\sum_{i=1}^{196}p_i,\\
-\text{M3:}\quad z &= W[c;\bar p]+b,\\
-\text{M4:}\quad a_i &= \operatorname{softmax}_i
-  \bigl(w_2^\top\tanh(W_1p_i+b_1)+b_2\bigr),\quad z=\sum_i a_ip_i.
+ r_i(x)&=w_2^\top\tanh(W_1p_i(x)+b_1)+b_2,\\
+ a_i(x)&=\frac{\exp(r_i(x))}{\sum_{j=1}^{196}\exp(r_j(x))},\\
+ z_{M4}(x)&=\sum_{i=1}^{196}a_i(x)p_i(x).
 \end{align}
-M1/M2 không có trainable component. M3 dùng affine projection
-$1536\rightarrow768$. M4 dùng Attention Pooling $768\rightarrow256\rightarrow1$,
-học content-dependent weights trên final-layer patch-token representations
-để tạo global retrieval embedding. Attention weights chỉ dùng diagnostic,
-không phải bằng chứng localization hay causal importance.
+Mạng tính trọng số có kích thước $768\rightarrow256\rightarrow1$ và được
+train bằng Proxy Anchor. Các trọng số cho biết Patch Tokens nào đóng góp nhiều
+hơn vào embedding; chúng không được xem là kết quả xác định vị trí đối tượng.
 
-M3/M4 được fit bằng Proxy Anchor\footnote{S. Kim, D. Kim, M. Cho, S. Kwak,
-\href{https://arxiv.org/abs/2003.13911v1}{Proxy Anchor Loss for Deep Metric
-Learning}, arXiv:2003.13911v1, CVPR 2020. E2A là adaptation trên frozen
-DINOv3, không phải faithful reproduction toàn bộ hệ thống trong bài báo.}
-với seed 42, 30 epochs, global batch 20 classes $\times$ 4 images;
-AdamW, LR $10^{-4}$, weight decay $10^{-4}$ cho representation và 0 cho
-proxies, cosine scheduler, scale 32, margin 0.1, gradient clipping 5.0.
-Configs hiện tại dùng FP32 training cho cả M3/M4; backbone extraction có
-thể dùng FP16 AMP. Runtime mục tiêu là hai T4, một process/GPU với DDP
-và global differentiable gather trước Proxy Anchor.
+\section{Thiết lập thực nghiệm}
+CUB-200-2011 có 200 lớp và 11.788 ảnh \cite{wah2011cub}. Classes 0--99 gồm
+5.864 ảnh được dùng trong quá trình phát triển mô hình. Tập này được chia
+80/20 theo từng lớp với seed 42 thành 4.687 ảnh train và 1.177 ảnh validation.
+Classes 100--199 gồm 5.924 ảnh được dùng để so sánh cuối cùng. Mỗi ảnh lần
+lượt làm ảnh truy vấn và được loại khỏi danh sách kết quả của chính nó.
 
-\begin{table}[ht]
+Backbone là \texttt{facebook/dinov3-vitb16-pretrain-lvd1689m}, revision
+\texttt{5931719e67bbdb9737e363e781fb0c67687896bc}. Ảnh đầu vào có kích thước
+$224\times224$. Tất cả phương pháp dùng cùng cách xử lý ảnh, chuẩn hóa L2,
+Cosine Similarity và Recall@1/2/4/8. Top-100 ảnh cùng ID và điểm số được lưu
+cho từng phương pháp.
+
+M3 và M4 được train trong 30 epoch bằng Proxy Anchor
+\cite{kim2020proxyanchor}. Mỗi batch gồm 20 lớp và 4 ảnh mỗi lớp; learning
+rate $10^{-4}$, weight decay $10^{-4}$, cosine scheduler và giới hạn gradient
+5,0. Seed 42 được dùng cho khởi tạo, lấy mẫu và train. Hai Tesla T4 được dùng
+để train; DINOv3 không nhận gradient.
+
+\begin{table}[htbp]
 \centering
-\caption{Số tham số ngoài frozen backbone. Optimized gồm proxies;
-deployable chỉ gồm representation. Epoch lấy từ manifest của run hiện tại.}
-\begin{tabular}{lrrr}
+\caption{Thiết lập của bốn phương pháp. Số tham số train gồm cả Proxy Anchor;
+số tham số sử dụng khi truy hồi chỉ tính phần tạo embedding.}
+\begin{tabular}{@{}llrrr@{}}
 \toprule
-Method & Optimized & Deployable & Selected epoch\\
+Mã & Phương pháp & Tham số train & Tham số truy hồi & Epoch được chọn\\
 \midrule
-M1 & 0 & 0 & --\\
-M2 & 0 & 0 & --\\
-M3 & 1,257,216 & 1,180,416 & 28\\
-M4 & 273,921 & 197,121 & 27\\
+M1 & CLS Token & 0 & 0 & --\\
+M2 & Mean Patch Pooling & 0 & 0 & --\\
+M3 & CLS + Mean Patch Fusion & 1.257.216 & 1.180.416 & 25\\
+M4 & Attention Pooling & 273.921 & 197.121 & 27\\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\section{Protocol lựa chọn}
+\section{Cách chọn phương pháp}
+Trên validation, checkpoint M3 và M4 được chọn theo số ảnh truy xuất đúng tại
+Recall@1, sau đó lần lượt xét Recall@2, Recall@4, Recall@8 và epoch sớm hơn
+nếu các kết quả bằng nhau. Validation không được dùng để cập nhật trọng số.
 
-Validation chọn checkpoint M3/M4 theo integer Hits@1 $\rightarrow$ Hits@2
-$\rightarrow$ Hits@4 $\rightarrow$ Hits@8 $\rightarrow$ earliest epoch.
-Không dùng validation/test rows để tính training gradient.
-Sau validation, chạy cả bốn phương pháp trên classes 100--199 và chọn
-winner theo integer test Hits@1 $\rightarrow$ Hits@2 $\rightarrow$ Hits@4
-$\rightarrow$ Hits@8 $\rightarrow$ fewer optimized parameters
-$\rightarrow$ fixed M1--M4 order. Không còn validation-based selection lock.
-Tolerance float32 chỉ dùng để đối chiếu artifacts, không chọn winner.
+Theo quyết định của thực nghiệm E2A, sau khi chọn checkpoint, cả M1--M4 được
+chạy trên classes 100--199. Phương pháp cuối cùng được chọn theo Hits@1,
+Hits@2, Hits@4, Hits@8, số tham số train ít hơn và thứ tự cố định M1--M4.
+Vì classes 100--199 đã được dùng để chọn phương pháp, đây là tập so sánh
+phương pháp, không còn là tập kiểm tra hoàn toàn độc lập.
 
-\section{Kết quả validation và test selection}
-
-\begin{table}[ht]
+\section{Kết quả}
+\subsection{Kết quả validation}
+\begin{table}[htbp]
 \centering
-\caption{Validation Recall (\%), 1,177 queries. M3 tốt nhất ở validation,
-nhưng validation không quyết định winner trong protocol đã sửa.}
-\begin{tabular}{lrrrr}
+\caption{Recall trên 1.177 ảnh validation (\%).}
+\begin{tabular}{@{}lrrrr@{}}
 \toprule
-Method & R@1 & R@2 & R@4 & R@8\\
+Phương pháp & R@1 & R@2 & R@4 & R@8\\
 \midrule
-M1 & 83.52 & 88.95 & 93.54 & 96.43\\
-M2 & 46.81 & 57.43 & 70.09 & 80.71\\
-M3 & 86.32 & 91.08 & 94.65 & 96.60\\
-M4 & 77.06 & 84.79 & 91.08 & 94.82\\
+M1 --- CLS Token & 83,5174 & 88,9550 & 93,5429 & 96,4316\\
+M2 --- Mean Patch Pooling & 46,8139 & 57,4342 & 70,0935 & 80,7137\\
+M3 --- CLS + Mean Patch Fusion & \textbf{86,2362} & \textbf{91,1640} & \textbf{94,6474} & \textbf{96,6015}\\
+M4 --- Attention Pooling & 77,0603 & 84,7918 & 91,0790 & 94,8173\\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\begin{table}[ht]
+M3 cao hơn M1 2,7188 điểm phần trăm tại Recall@1 trên validation. Điều này
+cho thấy lớp chiếu của M3 học tốt trên classes 0--99. Tuy nhiên, validation
+và train chứa cùng các lớp nên kết quả này chưa cho biết M3 có tốt hơn trên
+các lớp mới hay không.
+
+\subsection{Kết quả trên classes 100--199}
+\begin{table}[htbp]
 \centering
-\caption{Test-selection Recall (\%) trên 5,924 queries, từ bundle mới nhất.}
-\begin{tabular}{lrrrr}
+\caption{Recall trên 5.924 ảnh thuộc classes 100--199 (\%). Kết quả tốt nhất
+tại từng Recall được in đậm.}
+\begin{tabular}{@{}lrrrr@{}}
 \toprule
-Method & R@1 & R@2 & R@4 & R@8\\
+Phương pháp & R@1 & R@2 & R@4 & R@8\\
 \midrule
-\textbf{M1} & \textbf{88.01} & \textbf{92.76} & 95.26 & \textbf{97.01}\\
-M2 & 45.76 & 57.87 & 68.23 & 78.75\\
-M3 & 87.29 & 92.27 & 95.26 & 96.88\\
-M4 & 80.65 & 88.37 & 92.83 & 95.91\\
+M1 --- CLS Token & \textbf{87,9980} & \textbf{92,7583} & \textbf{95,2566} & \textbf{97,0122}\\
+M2 --- Mean Patch Pooling & 45,7461 & 57,8663 & 68,2309 & 78,7643\\
+M3 --- CLS + Mean Patch Fusion & 87,2890 & 92,2519 & 95,2397 & 96,8602\\
+M4 --- Attention Pooling & 80,6550 & 88,3693 & 92,8258 & 95,9149\\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\begin{table}[ht]
+\begin{table}[htbp]
 \centering
-\caption{Integer test Hits dùng để chọn winner, không dùng Recall làm tròn.}
-\begin{tabular}{lrrrr}
+\caption{Số ảnh truy xuất đúng dùng để chọn phương pháp.}
+\begin{tabular}{@{}lrrrr@{}}
 \toprule
-Method & Hits@1 & Hits@2 & Hits@4 & Hits@8\\
+Phương pháp & Hits@1 & Hits@2 & Hits@4 & Hits@8\\
 \midrule
-M1 & 5,214 & 5,495 & 5,643 & 5,747\\
-M2 & 2,711 & 3,428 & 4,042 & 4,665\\
-M3 & 5,171 & 5,466 & 5,643 & 5,739\\
-M4 & 4,778 & 5,235 & 5,499 & 5,682\\
+M1 --- CLS Token & \textbf{5.213} & \textbf{5.495} & \textbf{5.643} & \textbf{5.747}\\
+M2 --- Mean Patch Pooling & 2.710 & 3.428 & 4.042 & 4.666\\
+M3 --- CLS + Mean Patch Fusion & 5.171 & 5.465 & 5.642 & 5.738\\
+M4 --- Attention Pooling & 4.778 & 5.235 & 5.499 & 5.682\\
 \bottomrule
 \end{tabular}
 \end{table}
 
-M3 tăng validation R@1 so với M1 khoảng 2.8037 điểm phần trăm, nhưng
-thấp hơn M1 trên unseen-class selection split. Điều này phù hợp với
-limitation của same-class validation, nhưng chưa chứng minh nguyên nhân
-là overfitting. M2 thấp nhất ở cả hai split. M4 tốt hơn mean pooling,
-nhưng chưa vượt CLS baseline. Trong cấu hình này, learned aggregation
-không cải thiện test-selection R@1 so với final CLS.
+M1 cao hơn M3 42 Hits@1, 30 Hits@2, 1 Hits@4 và 9 Hits@8. Vì Hits@1 là
+tiêu chí đầu tiên, M1 được chọn mà không cần xét số tham số. M3 đứng thứ hai
+và chỉ thấp hơn M1 0,7090 điểm phần trăm tại Recall@1. M4 tốt hơn M2 nhưng
+vẫn thấp hơn M1. M2 cho kết quả thấp nhất ở cả validation và classes
+100--199.
 
-M1 hơn M3 lần lượt 43, 29, 0 và 8 Hits ở K=1/2/4/8. Đây là observed
-differences; chưa tính paired confidence interval hay significance test,
-do đó không kết luận statistical superiority.
+\section{Phân tích}
+\subsection{CLS Token là embedding phù hợp nhất}
+CLS Token đạt kết quả cao nhất mà không cần train thêm. Kết quả cho thấy
+embedding tổng hợp sẵn của DINOv3 giữ thông tin cần thiết cho truy hồi chim
+tốt hơn việc chỉ lấy trung bình các Patch Tokens.
 
-\section{Kiểm tra artifacts và tái lập}
+\subsection{M3 tốt trên validation nhưng không vượt M1 trên lớp mới}
+M3 học cách kết hợp CLS và Mean Patch nên đạt Recall@1 cao nhất trên
+validation. Khi chuyển sang classes 100--199, M3 giảm xuống dưới M1. Một khả
+năng là lớp chiếu đã học đặc điểm phù hợp với classes 0--99 nhưng không mang
+lại lợi ích tương tự cho các lớp chưa thấy. Kết quả hiện tại chỉ có một seed
+nên chưa đủ để xác định chắc chắn nguyên nhân.
 
-Nguồn chính là \texttt{outputs/e2a\_selection/test\_selection.json} và
-\texttt{artifacts/m1/} đến \texttt{m4/}; validation lấy từ
-\texttt{metrics/validation.json} ở các thư mục phương pháp.
-Đã kiểm tra trực tiếp common 5,924 IDs duy nhất, labels classes 100--199,
-Top-100 shape $[5924,100]$, candidates đúng split, không self-match hay
-candidate trùng; cosine scores hữu hạn và giảm dần. Recomputed Hits,
-Recall và config/metrics/ranking hashes khớp selection JSON.
+\subsection{Mean Patch và Attention Pooling}
+M2 lấy trung bình tất cả Patch Tokens nên các vùng nền có ảnh hưởng ngang với
+vùng chứa con chim; điều này có thể làm embedding mất thông tin quan trọng.
+M4 học trọng số cho Patch Tokens và tốt hơn M2, nhưng vẫn không dùng CLS Token
+nên chưa đạt kết quả của M1. Trọng số attention chỉ được dùng để xem mức đóng
+góp của từng Patch Token, không được xem là bằng chứng mô hình đã xác định đúng
+vị trí con chim.
 
-Test embeddings M3/M4 shape $[5924,768]$, hữu hạn và nonzero. Cosine scores
-kiểm tra trên subset 64 queries sai lệch tối đa dưới $1.1\times10^{-6}$;
-đây không phải full ranking recomputation. M4 attention weights shape
-$[5924,196]$, không âm, tổng gần 1; entropy hữu hạn và khớp weights trong
-sai số lưu FP16. M1/M2 dùng manifest-addressed full feature caches
-$[11788,768]$, không có test embedding riêng trong portable bundle.
-Bundle không kèm backbone caches, patch shards hay training checkpoints;
-kiểm tra này không thay thế tái chạy toàn bộ training/extraction.
+\section{Kết quả đã lưu và khả năng chạy lại}
+Kết quả lựa chọn được lưu trong
+\texttt{outputs/e2a\_selection/test\_selection.json}. Mỗi phương pháp có file
+cấu hình, Recall@K, Top-100 ID và điểm số dưới
+\texttt{outputs/e2a\_selection/artifacts/m1/} đến \texttt{m4/}. M1 và M2 lưu
+embedding của toàn bộ 11.788 ảnh; M3 và M4 lưu embedding 768 chiều của tập
+được đánh giá cùng checkpoint đã chọn.
 
-\section{Limitations và bàn giao E2B}
+Các file hiện tại đã được kiểm tra lại: 5.924 ID ảnh không trùng, labels thuộc
+classes 100--199, mỗi ảnh có đúng Top-100 kết quả, không chứa chính ảnh truy
+vấn và điểm cosine đều hợp lệ. Tính lại Hits từ ranking hiện tại cho kết quả
+M1 là 5.213/5.495/5.643/5.747, khớp file lựa chọn và baseline E2B. Cache M1
+hiện tại có SHA-256
+\texttt{123db3b40cd3083f5889f9a96a58ac3096fb60fef780272cb5dbea8d820fb3cb}.
 
-\begin{itemize}
-\item Classes 100--199 đã được dùng để chọn phương pháp và đã có rerun;
-không còn untouched final test. E2A/E2B dùng lại split này phải disclosure
-selection bias, không gọi là unbiased final generalization.
-\item Fit/validation khác ảnh nhưng cùng classes 0--99; validation chỉ
-đo image generalization trong cùng class set, không trực tiếp đo
-unseen-class generalization.
-\item M3/M4 là single-seed results (42); không báo mean $\pm$ std theo
-seed, chưa đo training variance. M1/M2 không có training-seed variance.
-\item Đây là comparison of representation pipelines, không phải ablation
-chỉ thay pooling: learned components và số tham số khác nhau.
-\item FP16 extraction/storage có thể tạo thay đổi nhỏ giữa reruns.
-Báo cáo dùng bundle mới nhất, không trộn kết quả của các lần chạy.
-Attention diagnostics không phải localization evidence.
-\end{itemize}
+M4 lưu Patch Tokens bằng FP16 để giảm dung lượng. Kiểm tra trên 128 ảnh yêu
+cầu cosine giữa đặc trưng trước và sau khi lưu ít nhất 0,99999 và sai số L2
+tương đối không quá 0,001. Việc trích xuất lại bằng môi trường khác vẫn có
+thể tạo sai khác số học nhỏ; không nên trộn kết quả từ hai cache khác nhau.
 
-Quyết định bàn giao: dùng \textbf{M1 final CLS}, L2 và cosine làm
-representation/R0 cho E2B, giữ nguyên split, preprocessing, self-match
-exclusion và Top-100 contract. Confidence learning vẫn phải fit/tune trên
-development data. Báo cáo E2B cần kế thừa disclosure rằng representation
-được chọn bằng test performance.
+\section{Giới hạn}
+Classes 100--199 đã được dùng để chọn M1 nên không còn là tập kiểm tra hoàn
+toàn chưa được xem. Train và validation dùng các ảnh khác nhau nhưng cùng
+classes 0--99; vì vậy validation chưa đo trực tiếp kết quả trên các lớp mới.
+M3 và M4 chỉ chạy với seed 42 nên chưa biết kết quả thay đổi bao nhiêu giữa
+nhiều lần train. M1 và M2 không cần train nên không có thay đổi theo seed
+huấn luyện.
+
+Bốn phương pháp không chỉ khác cách lấy token: M3 và M4 có tham số được train,
+trong khi M1 và M2 không có. Do đó kết quả là so sánh bốn cách tạo embedding,
+không phải phép thử chỉ thay một thành phần duy nhất. Báo cáo chỉ dùng các
+file kết quả hiện tại và thống nhất M1 ở 5.213 Hits@1.
+
+\section{Kết luận}
+M1 final CLS Token đạt Recall@1 \SI{87.9980}{\percent} và được chọn làm
+embedding cho E2B. M3 đứng thứ hai với \SI{87.2890}{\percent}; M4 và M2 lần
+lượt đạt \SI{80.6550}{\percent} và \SI{45.7461}{\percent}. Việc thêm lớp
+học mới trong M3/M4 chưa cải thiện kết quả trên classes 100--199 so với CLS
+Token có sẵn. E2B vì vậy sử dụng M1, chuẩn hóa L2, Cosine Similarity, loại
+chính ảnh truy vấn và giữ Top-100 ảnh ứng viên.
+
+\begin{thebibliography}{9}
+\bibitem{simeoni2025dinov3}
+O. Siméoni, H. V. Vo, M. Seitzer, và cộng sự,
+DINOv3, arXiv:2508.10104, 2025.
+
+\bibitem{wah2011cub}
+C. Wah, S. Branson, P. Welinder, P. Perona, và S. Belongie,
+The Caltech-UCSD Birds-200-2011 Dataset, CNS-TR-2011-001, 2011.
+
+\bibitem{kim2020proxyanchor}
+S. Kim, D. Kim, M. Cho, và S. Kwak,
+Proxy Anchor Loss for Deep Metric Learning,
+IEEE/CVF Conference on Computer Vision and Pattern Recognition, 2020.
+\end{thebibliography}
 
 \end{document}
