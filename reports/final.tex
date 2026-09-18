@@ -61,13 +61,12 @@ Chuỗi thực nghiệm trả lời ba câu hỏi liên tiếp:
   \item Cách tạo embedding nào từ CLS Token và Patch Tokens của DINOv3 phù hợp
   nhất để làm representation chung cho các bước truy hồi tiếp theo?
   \item Nếu uncertainty theo ảnh không hiệu quả, confidence học trực tiếp trên
-  một cặp ảnh có giữ lại thông
-  tin phù hợp hơn cho truy hồi hay không?
+  một cặp ảnh có cung cấp tín hiệu phù hợp hơn cho truy hồi hay không?
 \end{enumerate}
 
 E1, E2A và E2B đều giữ nguyên backbone DINOv3. E1 chạy ba seed để đo mức biến
-động của EDL head. M3/M4 của E2A và E2B chạy seed 42; các kết quả này vì vậy
-được báo cáo là single-seed result, không trình bày mean $\pm$ std.
+động của EDL head. M3, M4 và E2B chỉ chạy seed 42, vì vậy các kết quả này được
+báo cáo theo một lần chạy và không trình bày mean $\pm$ std.
 
 \section{Phương pháp}
 \subsection{Ký hiệu chung}
@@ -202,15 +201,19 @@ Các giá trị $\lambda\in\{0;0{,}25;0{,}5;0{,}75;0{,}9;1\}$ đều được l�
 $\lambda=0$ là Pairwise Confidence, còn $\lambda=1$ tái tạo baseline.
 
 \section{Thiết lập thực nghiệm}
+\subsection{Dữ liệu và môi trường thực thi}
 CUB-200-2011 gồm 11.788 ảnh. Classes 0--99 tạo tập development 5.864 ảnh;
 classes 100--199 tạo tập test 5.924 ảnh chưa xuất hiện khi train. Development
 được chia theo từng lớp thành 4.687 ảnh fit và 1.177 ảnh validation với seed
 chia dữ liệu cố định bằng 42.
 
-Backbone là \texttt{facebook/dinov3-vitb16-pretrain-lvd1689m}, revision
-\texttt{5931719e67bbdb9737e363e781fb0c67687896bc}, ảnh đầu vào
+Backbone là \texttt{facebook/dinov3-vitb16-pretrain-lvd1689m}, ảnh đầu vào
 $224\times224$. Thực nghiệm chạy bằng Python 3.12.13, PyTorch 2.10.0,
-CUDA 12.8 và hai Tesla T4. Metrics là Recall@1/2/4/8.
+CUDA 12.8 và hai Tesla T4. Backbone được giữ nguyên trong toàn bộ chuỗi thực
+nghiệm; chỉ các head hoặc lớp tổng hợp được train ở những nhánh tương ứng.
+
+\subsection{Đánh giá truy hồi}
+Tất cả phương pháp dùng cùng quy tắc loại chính ảnh truy vấn khỏi gallery.
 Với tập $\mathcal{Q}$ gồm các query, đặt
 $h_i^{(K)}=1$ nếu Top-$K$ của query $x_i$ chứa ít nhất một ảnh cùng lớp và
 bằng 0 trong trường hợp ngược lại. Khi đó
@@ -221,13 +224,38 @@ bằng 0 trong trường hợp ngược lại. Khi đó
 \end{equation}
 $H@K$ là số query truy hồi thành công, được gọi là Hits@$K$ trong phần chọn
 mô hình; đây là số đếm tương ứng với Recall@$K$, không phải một metric khác.
+Các kết quả được báo cáo tại $K\in\{1,2,4,8\}$.
 
-Trong E1, ba seed 42, 43 và 44 dùng cùng fit/validation split. Sau khi chọn
-epoch và $N$ trên validation, EDL head được train lại trên toàn development để
-đánh giá test. Trong phép so sánh E2B, EDL control và Pairwise Confidence đều
-chỉ train trên 4.687 ảnh fit. Checkpoint Pairwise Confidence được chọn theo
-validation BCE tại epoch 19. $\lambda=0{,}75$ được chọn trên hàng $N=100$ của
-validation theo Hits@1 $\rightarrow$ Hits@2 $\rightarrow$ Hits@4
+\subsection{Protocol E1 và E2A}
+Trong E1, ba seed 42, 43 và 44 dùng cùng một fit/validation split. Epoch và
+$N$ được chọn trên validation; sau đó EDL head được train lại trên toàn bộ
+development để đánh giá test. Trong E2A, M3 và M4 được train trên classes
+0--99, chọn checkpoint bằng validation rồi mới đánh giá cùng M1 và M2 trên
+classes 100--199.
+
+\subsection{Tạo dữ liệu và train E2B}
+Đầu tiên, mỗi ảnh fit được dùng làm query để lấy Top-100 candidate gần nhất
+theo cosine M1. Chính ảnh query được loại bỏ. Candidate list này được tạo một
+lần và giữ cố định, nên hard-negative mining không thay đổi theo MLP đang
+train.
+
+Ở mỗi epoch, một query tạo 32 cặp: 16 positive cùng lớp, 8 hard negative khác
+lớp lấy từ Top-100 và 8 negative khác lớp được chọn ngẫu nhiên. Toàn bộ 4.687
+query tạo 149.984 cặp, với số positive và negative bằng nhau. Hai đầu của cặp
+được đổi vị trí ngẫu nhiên với xác suất 50\% rồi xáo trộn trước khi train bằng
+Binary Cross Entropy. Các cặp được lấy mẫu lại một cách xác định ở mỗi epoch
+từ seed gốc 42; random swap chỉ là tăng cường dữ liệu khi train.
+
+Validation và test không dùng phân bố cân bằng này. MLP chấm toàn bộ Top-100
+cosine theo đúng thứ tự query--candidate; nhãn bằng 1 nếu hai ảnh cùng lớp và
+bằng 0 nếu khác lớp. Do đó validation có
+$1.177\times100=117.700$ cặp để chọn checkpoint bằng BCE, còn test có
+$5.924\times100=592.400$ cặp để tính confidence và đánh giá reranking.
+
+EDL control và Pairwise Confidence đều chỉ train trên 4.687 ảnh fit để bảo
+đảm so sánh cùng dữ liệu. Checkpoint Pairwise Confidence được chọn tại epoch
+19 theo validation BCE. Trên validation với $N=100$, $\lambda=0{,}75$ được
+chọn theo thứ tự Hits@1 $\rightarrow$ Hits@2 $\rightarrow$ Hits@4
 $\rightarrow$ Hits@8 $\rightarrow$ $\lambda$ lớn hơn.
 
 \section{Kết quả E1: uncertainty theo ảnh}
@@ -271,17 +299,11 @@ Khi $N$ tăng, nhiều ảnh vốn được cosine đặt đúng bị đưa xu�
 $N=10$ là lựa chọn ít bất lợi nhất, không phải một cấu hình vượt baseline.
 
 \section{Kết quả E2A: chọn representation cho E2B}
-E2A so sánh bốn cách tạo embedding 768 chiều từ final-layer tokens của
-DINOv3. M1 dùng trực tiếp CLS Token; M2 lấy trung bình 196 Patch Tokens. Hai
-phương pháp này không có thành phần cần train. M3 ghép CLS với Mean Patch rồi
-học một lớp chiếu bằng Proxy Anchor. M4 học trọng số khác nhau cho 196 Patch
-Tokens dựa trên nội dung ảnh rồi tạo một embedding chung; các attention weights
-chỉ phục vụ phân tích, không được xem là bằng chứng xác định vị trí đối tượng.
-
-M3 và M4 được train trên classes 0--99 với seed 42; backbone DINOv3 vẫn được
-giữ nguyên. Sau khi checkpoint học được khóa bằng validation, cả M1--M4 được
-đánh giá bằng cùng cosine similarity, self-match exclusion và Recall@K trên
-5.924 ảnh classes 100--199.
+Mục tiêu của E2A là chọn một representation chung trước khi thực hiện E2B.
+Bốn phương pháp M1--M4 được so sánh bằng cùng cosine similarity, quy tắc loại
+self-match và Recall@K. M1/M2 dùng trực tiếp feature DINOv3; M3/M4 được train
+trên classes 0--99 với seed 42 và chọn checkpoint bằng validation. Sau đó cả
+bốn phương pháp được đánh giá trên 5.924 ảnh thuộc classes 100--199.
 
 \begin{table}[H]
 \centering
@@ -300,18 +322,18 @@ M4 & Attention Pooling & 80,6550 & 88,3693 & 92,8258 & 95,9149\\
 \end{tabular}
 \end{table}
 
-Quy tắc lựa chọn xét lần lượt Hits@1, Hits@2, Hits@4, Hits@8, số tham số học
-được ít hơn và thứ tự cố định M1--M4. M1 đạt 5.214 Hits@1, cao hơn M3 43 ảnh
-truy vấn; vì vậy tiêu chí đầu tiên đã đủ để chọn M1. M1 đồng thời không cần
-train thêm, đơn giản hơn M3 và M4, và tạo đúng DINOv3 cosine baseline dùng ở
-E2B. Do đó E2B cố định representation là final CLS Token của M1, chuẩn hóa L2,
-không thay đổi embedding trong quá trình học Pairwise Confidence.
-
-Việc chọn M1 được thực hiện trên classes 100--199 theo protocol E2A đã dùng.
-Vì vậy tập này là tập so sánh representation, không còn là một final test hoàn
-toàn độc lập. Giới hạn này được kế thừa trong toàn bộ kết quả E2B bên dưới.
+M1 đạt Recall@1 cao nhất với 5.214 query thành công, nhiều hơn M3 43 query.
+Tiêu chí đầu tiên vì vậy đã đủ để chọn M1 mà không cần dùng các bước phân xử
+Hits@2, Hits@4, Hits@8, số tham số và thứ tự M1--M4. M1 cũng không cần train
+thêm và chính là DINOv3 cosine baseline. E2B do đó cố định đầu vào là final CLS
+Token của M1 sau chuẩn hóa L2; embedding không thay đổi khi train Pairwise
+Confidence.
 
 \section{Kết quả E2B: confidence theo cặp}
+Sau khi cố định representation M1, E2B so sánh năm cách xếp hạng trên cùng
+candidate list. Phần đầu báo cáo kết quả tại $N=100$; các phần sau lần lượt
+phân tích ảnh hưởng của $N$ và hệ số $\lambda$.
+
 \subsection{So sánh năm phương pháp}
 \begin{table}[H]
 \centering
@@ -386,21 +408,23 @@ $\lambda$ & R@1 & R@2 & R@4 & R@8\\ \midrule
 Kết quả tốt nhất không xuất hiện khi confidence đứng một mình. Confidence chỉ
 hữu ích như một tín hiệu phụ có trọng số nhỏ bên cạnh cosine.
 
-\section{Phân tích độ tin cậy và failure cases}
-Trên toàn bộ 592.400 cặp ứng viên test, Pairwise Confidence đạt AUROC 0,7054,
-AUPRC 0,6365, Brier score 0,3646 và ECE 0,3689. Ở candidate cosine Top-1,
-AUROC là 0,6287 và ECE là 0,0833. Confidence có khả năng phân biệt nhất định
-nhưng chưa được hiệu chỉnh tốt trên toàn bộ Top-100; phần lớn score tập trung
-ở khoảng 0,9--1,0.
+\section{Phân tích thay đổi Top-1 và failure cases}
+% Trên toàn bộ 592.400 cặp ứng viên test, Pairwise Confidence đạt AUROC 0,7054,
+% AUPRC 0,6365, Brier score 0,3646 và ECE 0,3689. Ở candidate cosine Top-1,
+% AUROC là 0,6287 và ECE là 0,0833. Confidence có khả năng phân biệt nhất định
+% nhưng chưa được hiệu chỉnh tốt trên toàn bộ Top-100; phần lớn score tập trung
+% ở khoảng 0,9--1,0.
 
-\begin{figure}[H]
-\centering
-\includegraphics[width=0.55\textwidth]{e2b_candidate_calibration.png}
-\caption{Biểu đồ calibration của Pairwise Confidence trên các cặp ứng viên
-test. Đường đứt thể hiện trường hợp score khớp hoàn toàn tỉ lệ cặp cùng lớp.}
-\end{figure}
+% \begin{figure}[H]
+% \centering
+% \includegraphics[width=0.55\textwidth]{e2b_candidate_calibration.png}
+% \caption{Biểu đồ calibration của Pairwise Confidence trên các cặp ứng viên
+% test. Đường đứt thể hiện trường hợp score khớp hoàn toàn tỉ lệ cặp cùng lớp.}
+% \end{figure}
 
-Tại $N=100$, Image Uncertainty sửa đúng 134 query nhưng làm sai thêm 3.726
+Để giải thích thay đổi Recall@1, mỗi query được phân loại theo việc Top-1 trước
+và sau reranking đúng hay sai. Tại $N=100$, Image Uncertainty sửa đúng 134
+query nhưng làm sai thêm 3.726
 query. Pairwise Confidence sửa đúng 213 và làm sai 752 query. Fusion cân bằng
 đúng 47 query được sửa và 47 query bị làm sai, nên tổng Hits@1 không đổi.
 
@@ -432,39 +456,45 @@ sửa đúng và làm sai bằng nhau giải thích Recall@1 không thay đổi.
 \end{figure}
 
 \section{Thảo luận}
-Kết quả thống nhất giữa E1 và E2B: uncertainty của một ảnh không đo trực tiếp
-khả năng ảnh đó phù hợp với một query cụ thể. Khi $N$ tăng, hard reranking theo
-uncertainty phá vỡ ngày càng nhiều thứ tự cosine đúng. Pairwise Confidence
-khắc phục một phần vì nhìn đồng thời query và candidate, nhưng vẫn kém cosine
-khi dùng riêng.
+\subsection{Từ uncertainty theo ảnh đến confidence theo cặp}
+E1 và E2B cùng cho thấy uncertainty của một candidate không đo trực tiếp mức
+phù hợp với một query cụ thể. Khi $N$ tăng, Image Uncertainty thay đổi nhiều
+vị trí cosine đúng hơn và Recall giảm nhanh. Pairwise Confidence sử dụng đồng
+thời query và candidate nên tốt hơn Image Uncertainty ở mọi $N$, nhưng vẫn
+chưa đủ chính xác để thay cosine khi dùng riêng.
 
-Kết quả E2A giải thích đầu vào của phép so sánh này: CLS Token có kết quả cao
-nhất trên classes 100--199, trong khi cách kết hợp có train của M3 không vượt
-M1 và M2/M4 chỉ dùng Patch Tokens nên giảm rõ rệt. Vì vậy khác biệt E2B đến từ
-cách dùng uncertainty/confidence, không đến từ việc thay representation giữa
-các nhánh.
+\subsection{Vai trò của representation và Fusion}
+E2A chọn M1 vì final CLS Token đạt Recall@1 cao nhất. M3 không vượt M1 dù có
+thêm lớp học được; M2 và M4 chỉ tổng hợp Patch Tokens và đều cho kết quả thấp
+hơn.
+Việc cố định M1 cho tất cả nhánh E2B giúp kết quả phản ánh cách dùng
+uncertainty hoặc confidence, thay vì khác biệt do đầu vào.
 
-Fusion cho kết quả hợp lý hơn vì cosine tiếp tục là tín hiệu chính. Với
-$\lambda=0{,}75$, confidence chỉ điều chỉnh các trường hợp gần nhau. Dù R@2,
-R@4 và R@8 tăng nhẹ, bằng chứng hiện tại chưa cho thấy mức tăng ổn định. E2B
-chỉ có một seed và test classes 100--199 đã được dùng trước đó để chọn
-representation E2A; vì vậy kết quả test không phải một đánh giá hoàn toàn độc
-lập và bootstrap chỉ mang ý nghĩa mô tả trên benchmark hiện tại.
+Fusion hoạt động ổn định hơn vì vẫn đặt trọng số chính vào cosine. Tại
+$\lambda=0{,}75$, confidence chỉ điều chỉnh thứ tự trong candidate list. R@2,
+R@4 và R@8 tăng nhẹ, nhưng các khoảng bootstrap đều chứa 0; vì vậy chưa thể
+kết luận Fusion tạo ra cải thiện ổn định so với baseline.
 
-Baseline E1 có 5.213 Hits@1, trong khi baseline E2B/E2A có 5.214 Hits@1. Đây
-là hai feature cache được trích xuất ở hai pipeline riêng. Mọi so sánh trong
-từng bảng vẫn dùng chung cache và ranking của chính thực nghiệm đó; không trộn
-baseline E1 với kết quả E2B.
+\subsection{Giới hạn của thực nghiệm}
+E2B chỉ chạy một seed và classes 100--199 đã được dùng để chọn representation
+trong E2A. Kết quả vì thế chưa phản ánh độ biến động giữa nhiều lần train và
+không phải đánh giá trên một final test hoàn toàn độc lập. Bootstrap trong báo
+cáo chỉ mô tả độ biến động theo query của benchmark hiện tại.
+
+Baseline E1 có 5.213 Hits@1, còn baseline E2A/E2B có 5.214 Hits@1 vì hai
+feature cache được trích xuất bởi hai pipeline riêng. Mỗi bảng vẫn so sánh các
+phương pháp trên cùng cache và ranking, nên chênh lệch một query này không làm
+thay đổi kết luận trong từng thực nghiệm.
 
 \section{Kết luận}
 E2A chọn M1 final CLS Token làm representation chung vì đạt Recall@1 cao nhất
 trong bốn pipeline. Trên representation này, Image Uncertainty Reranking không
 cải thiện truy hồi và suy giảm nhanh khi tăng Top-$N$. Pairwise Confidence
-tốt hơn rõ rệt so với Image Uncertainty
-trong điều kiện cùng tập train và cùng số ứng viên, nhưng chưa thể thay cosine.
+tốt hơn rõ rệt so với Image Uncertainty trong điều kiện cùng tập train và cùng
+số ứng viên, nhưng chưa thể thay cosine.
 Fusion với trọng số cosine lớn giữ nguyên R@1 và cải thiện rất nhỏ các Recall@K
-còn lại. Hướng tiếp theo nên tập trung vào hiệu chỉnh confidence, nhiều seed
-cho E2B và một benchmark độc lập chưa từng dùng để chọn phương pháp.
+còn lại. Hướng tiếp theo nên chạy E2B với nhiều seed, cải thiện confidence và
+đánh giá trên một benchmark độc lập chưa từng dùng để chọn phương pháp.
 
 \section*{Tài liệu tham khảo}
 \begin{enumerate}
