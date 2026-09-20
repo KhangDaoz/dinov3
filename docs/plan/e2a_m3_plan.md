@@ -1,266 +1,168 @@
-# E2A-M3 Implementation and Experiment Plan
+# E2A-M3: CLS + mean patch projection plan
 
-## 1. Objective and method definition
+Protocol: e2ab-v2. Status: proposed implementation; training is pending.
 
-E2A-M3 tests whether a supervised projection can fuse the accepted M1 global
-CLS representation with the M2 patch summary. For image $x_i$:
+## 1. Representation
 
-\[
-c_i=h_i^{\mathrm{CLS}},\qquad
-p_i=\frac{1}{196}\sum_{j=1}^{196}h_{i,j}^{\mathrm{patch}},
-\]
+Follow [the shared protocol](e2a_plan.md) and
+[the new specification](../experiments/e2a-e2b-new.md).
+Join final CLS c_i and mean patch p_i by image ID:
 
-\[
-v_i=W[c_i;p_i]+b,\qquad
-z_i=\frac{v_i}{\lVert v_i\rVert_2},
-\]
+~~~text
+p_i = mean(final_patch_tokens_i, patch_dimension)   # FP32, [768]
+v_i = W concat(c_i, p_i) + b
+z_i = v_i / ||v_i||_2
+W: [768,1536]; b: [768]
+~~~
 
-where $W\in\mathbb{R}^{768\times1536}$. M3 uses one affine projection
-`Linear(1536, 768, bias=True)` and no hidden layer, activation, dropout,
-uncertainty, or reranking. This isolates learned CLS/patch fusion from the
-more expressive attention aggregation evaluated by M4.
+Use Linear(1536,768,bias=True), Xavier-uniform weights and zero bias.
+Concatenation order is CLS, mean_patch. There is no separate normalization
+of the two inputs, hidden layer, activation, or dropout. Normalize the output
+for the metric loss and retrieval. Backbone and cached input tensors are frozen.
 
-The DINOv3 backbone remains frozen. Only the projection and training-only
-metric-learning proxies are optimized. Initialize the projection with Xavier
-uniform weights and zero bias using seed 42. Persisted retrieval embeddings
-are FP32 and L2 normalization occurs immediately before metric loss or cosine
-retrieval.
+This is the project's supervised DINOv3 fusion adaptation. It combines a new
+representation construction with a published metric-learning objective;
+the full system is not a faithful reproduction of that paper.
 
-## 2. Learning objective
+## 2. Proxy Anchor objective shared with M4
 
-Train M3 with Proxy Anchor loss using one learnable proxy per development
-class. Follow the published formulation with cosine-normalized embeddings and
-proxies, scale \(\alpha=32\), and margin \(\delta=0.1\). Use the
-[Proxy Anchor paper](https://arxiv.org/abs/2003.13911) and
-[official PyTorch repository](https://github.com/sung-yeon-kim/Proxy-Anchor-CVPR2020)
-as the method sources. Record the paper version, official repository commit
-and license before implementation. Describe cached frozen DINOv3 inputs and
-the lightweight fusion projection as a project adaptation, not an official
-Proxy Anchor reproduction.
+Use [Proxy Anchor v1, Eq. (4)](https://arxiv.org/pdf/2003.13911v1) with
+100 learnable class proxies and L2-normalized features/proxies.
+Let P be all proxies, P+ the proxies whose classes occur in the global batch,
+and X_p+ / X_p- its matching/nonmatching embeddings:
 
-The 100 class proxies are auxiliary training parameters and are discarded at
-inference. For the E2A complexity tie-break, count every optimized parameter:
+~~~text
+L_positive = (1 / |P+|) sum_{p in P+}
+             log(1 + sum_{x in X_p+} exp(-alpha * (cos(x,p) - delta)))
+L_negative = (1 / |P|) sum_{p in P}
+             log(1 + sum_{x in X_p-} exp( alpha * (cos(x,p) + delta)))
+L = L_positive + L_negative
+alpha = 32; delta = 0.1
+~~~
 
-- projection: \(768\times1536+768=1,180,416\);
-- proxies: \(100\times768=76,800\);
-- total trainable during fitting: 1,257,216;
-- deployable representation parameters: 1,180,416.
+A proxy without positives is excluded only from the positive denominator.
+Use a masked log-sum-exp including the constant-zero logit for numerical
+stability; an empty term is zero. Empty global batches are invalid.
+Initialize proxies with Kaiming normal, mode fan_out, as in the inspected
+author implementation. See [sources](sources.md) for pinned commit/license.
 
-This definition removes ambiguity in the “fewer trainable parameters” rule.
+Keep proxies in the training module and optimizer on the assigned GPU.
+They are not retrieval embeddings and are discarded at inference.
+Report 1,180,416 deployed projection parameters + 76,800 training-only proxies
+= 1,257,216 optimized parameters. Counts are descriptive, not winner rules.
 
-## 3. Locked data and selection protocol
+## 3. Controlled training recipe
 
-Use the accepted M1/M2 cache artifacts as immutable inputs. Align them by
-image ID rather than row position and verify identical labels, splits, model
-revision, processor settings, CUB manifest hash, and `[11788, 768]` shape.
-The M1 cache supplies CLS; the M2 cache supplies mean patch. Do not run the
-backbone again for M3.
+M3/M4 use these same project defaults, selected before the new experiment.
+They adapt the original training setup; they are not claimed as paper defaults.
 
-- Fit only on the canonical development-fit subset (about 80% per class,
-  labels 0--99).
-- Select checkpoints and report M3 only on the same 1,177 validation IDs used
-  by M1/M2, with manifest hash
-  `d9455ac8948ff640f94017339681a51744f6351f1db053732b3153a4c9c958ee`.
-- M3 fitting and validation use different images but the same classes 0--99.
-  The test selection split contains unseen classes 100--199. Therefore validation
-  measures within-class-set image generalization and is an imperfect proxy
-  for the class-generalization required by test selection; record this explicitly
-  as a limitation.
-- Seed 42 is the preregistered M3 decision run and must be used consistently
-  for projection/proxy initialization, balanced sampling, and training. Do not
-  choose among random seeds using validation performance.
-- Select the epoch lexicographically by the integer validation hit counts:
-  highest Hits@1, then Hits@2, Hits@4, Hits@8, then earliest epoch. Do not use
-  a floating-point tolerance for epoch selection. Recall values are derived
-  from these counts only for reporting.
-- Do not tune architecture, loss, margin, scale, optimizer, or learning rate
-  after observing M3 validation results.
+| Setting | Fixed value |
+|---|---|
+| Input partition | Development/Train only, 4,687 images |
+| Global batch | 20 distinct classes × 4 distinct images per class = 80 |
+| Two-T4 local batch | 40 images per rank |
+| Steps per epoch | ceil(4687 / 80) = 59 |
+| Epochs | 30 |
+| Optimizer | AdamW, lr 1e-4, betas (0.9,0.999), eps 1e-8 |
+| Weight decay | 1e-4 on representation weights; zero on biases/proxies |
+| Schedule | Cosine to zero, stepped after each optimizer update |
+| Precision | FP32 representation, normalization, proxies, loss, backward |
+| Gradient clipping | Global parameter-gradient norm 5.0 |
+| Validation | Exact cosine retrieval after each epoch |
+| Split seed | 42, identical for all runs |
+| Training seeds | Primary 42; publication roster [42,43,44] per shared plan |
 
-M3 validation selects its checkpoint but does not authorize an E2A winner.
-No test feature row may be passed through the learned projection during M3
-training; test projection happens later in the common selection stage.
+For each global batch, sample 20 classes uniformly without replacement and
+four images per selected class without replacement. Images may recur across
+batches. Every epoch has the declared number of sampled batches rather than
+a guaranteed full pass over all images. Persist seed, epoch, batch indices,
+sampler version and repetition counts. M3/M4 use the same sampled image
+sequence for a given seed. No augmentation is added to cached inputs.
 
-The later pipeline winner is selected by integer test Hits@1, Hits@2,
-Hits@4, Hits@8, total optimized parameter count, then fixed M1--M4 order.
-Recall values are not compared with a floating-point tolerance.
+Use DDP with an autograd-aware global embedding gather and global labels.
+The nonlinear loss must see all 80 examples. Synchronize both representation
+and proxy gradients; compare loss and every gradient with a one-device
+reference before accepting the implementation. Do not assume an arbitrary
+world-size multiplier is correct. Proxies must be registered inside the
+DDP-managed training module.
 
-## 4. Fixed training recipe
+Abort on invalid labels, nonfinite loss/gradients, or corrupted inputs.
+A development-only resource adjustment must preserve global batch/objective
+semantics and be applied to both M3/M4 before comparison.
 
-Use a class-balanced global batch with 20 classes and 4 images per class
-(80 samples globally; 40 per T4). Sample only development-fit IDs. Use one
-process per T4 with DDP and a differentiable global gather before Proxy Anchor
-loss so the loss sees the intended global batch; a nonlinear proxy loss must
-not be computed independently on two unrelated local batches and merely
-averaged.
+## 4. Checkpoint selection and freeze
 
-- epochs: 30;
-- optimizer: AdamW;
-- projection/proxy learning rate: `1e-4`;
-- weight decay: `1e-4` for projection weights, zero for bias and proxies;
-- scheduler: cosine decay to zero, stepped once per optimizer update;
-- precision: use FP32 for projection and Proxy Anchor training. Initial T4
-  execution showed non-finite FP16 backward gradients from the combination of
-  Proxy Anchor scale and AMP loss scaling; this stability correction does not
-  change the architecture, data, loss equation, or selection rule;
-- gradient clipping: global norm 5.0;
-- checkpoint evaluation: after every epoch;
-- deterministic seed: 42 for initialization, sampling, and all training RNGs.
+Fit only on Train. Validation consists of the shared 1,177 image IDs from
+classes 0–99, with its own query/gallery and no training images.
+Select maximum integer validation Hits@1, then Hits@2, Hits@4, Hits@8,
+then earliest epoch. Log all 30 epochs and the complete decision trace.
 
-Abort on non-finite inputs, embeddings, proxies, loss, or gradients. Save the
-sampler state and training history needed to reproduce the selected epoch.
-Because only seed 42 is run, report M3 as a single-seed result, never as
-mean~\(\pm\)~standard deviation. State the absence of multi-seed variance as
-an experimental limitation.
+The primary architecture/loss/optimizer search has one fixed setting.
+If additional development tuning is undertaken, declare equal candidate
+budgets for M3/M4, log every trial, and update the run manifest before Final
+Test. Never tune from test performance or pick a favorable seed.
 
-## 5. Implementation phases
+After selection freeze the projection, export Train/Validation [N,768]
+embeddings, and pass them to E2B-M3. Do not refit on Train+Validation.
+For each declared training seed use the matching M3 checkpoint in E2B.
+The shared global lock must include all four E2B branches before M3 test
+embeddings or test rankings can be generated.
 
-### Phase A -- Configuration and representation
+## 5. Implementation and artifact contract
 
-Add `configs/cub_e2a_m3.yaml`. Extend `config_e2a.py` with typed training and
-Proxy Anchor sections and an exact M3 contract: `cls_mean_projection`, final
-CLS plus final mean patch, output dimension 768, and L2 normalization. M1/M2
-must remain loadable without artificial training fields. Reject attention,
-register pooling, uncertainty, reranking, and test-stage tuning.
+Implement strict config in configs/cub_e2a_m3.yaml, CLSMeanPatchProjection in
+models/representations.py, ProxyAnchorLoss in models/metric_learning.py,
+and the generic training/representation.py loop. Add data/fused_cache.py
+with identity-based CLS/mean joins and complete provenance checks.
+Extend scripts/{train_e2a,evaluate_e2a,run_e2a}.py rather than duplicate
+evaluation logic.
 
-Add `CLSMeanPatchProjection` to `models/representations.py`. It accepts two
-aligned `[B,768]` tensors or a typed fused-feature batch, concatenates them in
-fixed order `CLS, mean_patch`, and returns `[B,768]`. Test that gradients reach
-only projection parameters and input order cannot silently change.
+Output root: outputs/e2a_fusion/<run_id>/seed_<seed>/.
 
-Add a focused `ProxyAnchorLoss` implementation in `models/metric_learning.py`.
-Cross-check its equation and a small numeric example against the cited paper
-and official implementation without copying third-party source blindly.
+~~~text
+config_resolved.yaml
+environment.json
+metadata.json
+inputs/{cls_manifest,mean_patch_manifest,split_manifest}.json
+checkpoints/best.pt
+training/{history,sampling_manifest,selection_trace}.json
+embeddings/{train,validation}.pt
+embeddings/manifest.json
+rankings/validation_top100.pt
+metrics/validation.json
+freeze.json
+~~~
 
-### Phase B -- Paired cache dataset and DDP training
+Checkpoint: projection/proxies, optimizer/scheduler, epoch/global step, RNG and
+sampler states, selected validation hits, cache/split/config/code hashes,
+parameter counts and source provenance. Write atomically on rank 0.
+Embedding manifest: raw/normalized convention, input concatenation order,
+upstream hashes, checkpoint hash, IDs, shape, dtype and partition.
+Final evaluation later appends test embeddings, rankings and metrics.
 
-Add a dataset/adapter that strictly joins M1 and M2 caches by image ID,
-validates shared provenance, and exposes only development-fit rows to the
-trainer. Add a deterministic distributed class-balanced batch sampler; every
-global batch must contain positive examples for each sampled class.
+## 6. Tests and acceptance
 
-Implement `training/representation.py` and `scripts/train_e2a.py`. Save one
-atomic checkpoint per new validation winner containing projection state,
-optimizer/scheduler state, proxy state, epoch, config hash, both input cache
-hashes, split hash, validation metrics, parameter counts, and Git/environment
-metadata. Rank 0 alone writes artifacts after distributed synchronization.
+Test shuffled-row cache joins, missing/duplicate IDs and provenance drift;
+hand-computed projection/input order; initialization, dimensions, counts,
+and gradients only to projection/proxies. Test Proxy Anchor with missing
+positive classes, empty negative sets, large logits, and finite gradients,
+against Eq. (4) and the independently inspected implementation.
 
-### Phase C -- Embedding export and validation
+Test class-balanced sampling, all RNG restoration on resume, validation
+epoch ties, and failure when Final Test or Validation enters the optimizer.
+Run two-rank CPU/mock gradient tests where possible and CUDA equivalence
+tests on both T4s. Confirm proxy parameters are synchronized and saved.
 
-Generalize `evaluate_e2a.py` so M3 loads the selected projection checkpoint,
-joins M1/M2 caches, and exports method-owned embeddings. During this stage,
-materialize only development-fit and validation embeddings. Test embeddings
-may be generated only during the common test-selection stage.
+Verify saved rankings reproduce Hits@K, checkpoint/config/cache hashes match,
+and the final stage rejects a lock missing any E2B branch. Run compileall,
+the complete pytest suite and mocked integration smoke before real training.
 
-Evaluate exact cosine retrieval on validation and save ordered Top-100
-candidate IDs and scores. Recompute Recall@1/2/4/8 from the serialized ranking
-and require exact agreement with `metrics/validation.json`.
+Expected command after implementation:
 
-### Phase D -- Orchestration and reporting
+~~~bash
+torchrun --standalone --nproc_per_node=2 scripts/run_e2a.py --config configs/cub_e2a_m3.yaml --stage validation
+~~~
 
-Extend `run_e2a.py` to dispatch M3 as `train -> export -> validation` while
-retaining the M1/M2 extraction flow. A validation rerun may reuse a checkpoint
-only when config, input-cache, split, and code provenance match; otherwise
-fail explicitly or retrain under a new run directory.
-
-Update `reports/e2a.tex` with M1--M3 validation results, the M3 selected epoch,
-loss provenance, and both parameter counts. Report M3-minus-M1 and M3-minus-M2
-deltas descriptively, but do not declare the E2A winner before M4 validation.
-Label M3 explicitly as a single-seed result and include neither seed-wise
-mean nor standard deviation.
-
-## 6. Planned files
-
-```text
-configs/cub_e2a_m3.yaml
-src/uncertainty_retrieval/config_e2a.py
-src/uncertainty_retrieval/data/fused_cache.py
-src/uncertainty_retrieval/models/representations.py
-src/uncertainty_retrieval/models/metric_learning.py
-src/uncertainty_retrieval/training/representation.py
-scripts/train_e2a.py
-scripts/evaluate_e2a.py
-scripts/run_e2a.py
-tests/unit/test_config_e2a.py
-tests/unit/test_fused_cache.py
-tests/unit/test_representations.py
-tests/unit/test_metric_learning.py
-tests/unit/test_representation_training.py
-tests/integration/test_e2a_m3_smoke.py
-reports/e2a.tex
-```
-
-Extend genuinely generic E2A modules instead of introducing parallel M3-only
-evaluation logic. Keep accepted M1/M2 artifacts and schemas unchanged.
-
-## 7. Artifact contract
-
-```text
-outputs/e2a_fusion/m3/seed_42/
-├── config_resolved.yaml
-├── environment.json
-├── metadata.json
-├── inputs/
-│   ├── cls_manifest.json
-│   └── mean_patch_manifest.json
-├── split/
-│   ├── fit_image_ids.pt
-│   ├── validation_image_ids.pt
-│   └── manifest_hash.txt
-├── checkpoints/best.pt
-├── training/history.json
-├── embeddings/
-│   ├── fit.pt
-│   ├── validation.pt
-│   └── manifest.json
-├── rankings/validation_top100.pt
-└── metrics/validation.json
-```
-
-The embedding manifest must identify both source-cache SHA-256 hashes,
-projection checkpoint hash, concatenation order, normalization policy, shape,
-dtype, IDs, labels, split, selected epoch, and parameter counts. Ranking
-artifacts retain the common E2A `[1177,100]` schema and validation-only gallery.
-
-## 8. Tests and acceptance criteria
-
-Focused unit tests must cover:
-
-- exact M3 config acceptance and forbidden/unknown settings;
-- cache alignment under permuted row order and rejection of ID, label, split,
-  processor, checkpoint, or manifest drift;
-- exact `CLS, mean_patch` concatenation, output shape, initialization,
-  gradients, FP32 normalization, and parameter counts;
-- Proxy Anchor positive/negative terms against a hand-computed example,
-  missing-positive classes, finite gradients, and invalid labels;
-- class-balanced sampler composition, deterministic seed behavior, and strict
-  exclusion of validation/test IDs from optimization;
-- DDP global-batch loss semantics and rank-0-only checkpoint writing. In
-  particular, compare the loss and projection/proxy gradients produced by the
-  differentiable gather across two ranks against the same concatenated global
-  batch computed on one device, within a declared numerical tolerance;
-- epoch selection by integer Hits@1, Hits@2, Hits@4, Hits@8, then earliest
-  epoch, including cases where rounded Recall values appear tied;
-- checkpoint/cache/config hash mismatch rejection;
-- Top-100 integrity and metric recomputation.
-
-During implementation, run only the focused E2A-M3 unit tests. Leave the full
-suite, integration smoke test, training run, and validation experiment to the
-user.
-
-M3 is accepted only when the selected checkpoint is reproducible from fit
-data, no validation/test sample contributes a gradient, both source caches and
-the validation hash match M1/M2, all saved embeddings/rankings pass integrity
-checks, and no test artifact exists. Completion of M3 authorizes M4
-implementation, not E2A winner selection.
-
-## 9. Execution
-
-After focused unit tests pass, run on two T4 GPUs:
-
-```bash
-python scripts/run_e2a.py \
-  --config configs/cub_e2a_m3.yaml \
-  --stage validation
-```
-
-Run `--stage test` only in the later common M1--M4 test-selection stage.
+Accept M3 for E2B when its selected checkpoint, development embeddings,
+selection trace and all integrity evidence exist. An improvement over M1/M2
+is not an acceptance condition.

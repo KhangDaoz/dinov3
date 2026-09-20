@@ -1,368 +1,326 @@
-# E2B Pair-wise Confidence Learning Implementation Plan
+# E2B: four-branch pair-wise confidence and fusion plan
 
-## 1. Objective and status
+Protocol: e2ab-v2. Status: proposed implementation; no accepted run or metrics.
 
-Learn a query--candidate compatibility score that addresses the limitations
-of image-level evidential uncertainty observed in E1. Evaluate whether it
-improves retrieval ranking and predicts retrieval correctness; these are
-separate research questions, neither is assumed to succeed.
+## 1. Scope and experiment matrix
 
-This plan defines the implemented E2B pipeline and the artifacts required for
-a complete rerun from validation through benchmark evaluation.
+Follow [the new specification](../experiments/e2a-e2b-new.md),
+[the shared protocol](e2a_plan.md), and [source lineage](sources.md).
+Train independent pair heads for M1, M2, M3 and M4. Every E2A representation
+is frozen before its pair head is trained. No earlier representation winner
+or historical score is an input.
 
-## 2. Accepted inputs and inherited limitations
+For each representation, report three primary Final Test modes:
 
-Use **E2A-M1 final CLS**, not M3: the accepted test-based selection artifact
-`outputs/e2a_selection/test_selection.json` selects M1 with Hits@1
-5,214/5,924 (Recall@1 88.0149%). M3 has 5,171 Hits@1. Verify selection,
-config, manifest, cache, and ranking hashes before accepting inputs.
+| Mode | Candidate generation | Ranking |
+|---|---|---|
+| Cosine | Exact cosine over the split gallery | Original cosine order |
+| Pairwise | Same representation's cosine Top-100 | Pair score, lambda=0 |
+| Fusion | Same representation's cosine Top-100 | Validation-selected lambda |
 
-Reuse the pinned frozen DINOv3 ViT-B/16 checkpoint, revision
-`5931719e67bbdb9737e363e781fb0c67687896bc`, processor at 224x224,
-and the M1 CLS cache `[11788,768]`. L2-normalize features for pair inputs
-and cosine retrieval; do not train or re-extract the backbone unnecessarily.
-Register/patch tokens are not needed by the pair network.
+This produces 12 primary rows per seed and three four-row result tables.
+Pairwise means candidate-constrained reranking; it is not exhaustive learned
+retrieval. Image-level evidential evaluation is outside the active scope.
 
-Classes 100--199 were already used to select M1 and have been inspected and
-rerun. They remain the fixed **evaluation benchmark**, not an untouched
-final test. All E2B reports must disclose inherited representation-selection
-bias. Do not additionally select checkpoint, lambda, seed, architecture,
-sampling, or calibration from this benchmark.
+## 2. Inputs and leakage barriers
 
-## 3. Fixed data protocol and leakage barriers
+Input z is a frozen L2-normalized FP32 768-vector from the corresponding
+E2A freeze record. Verify model/processor/source-cache, split, config and
+checkpoint hashes plus representation identity. M3/M4 pair heads use the
+matching training-seed representation. Do not backpropagate into z.
 
-- Development classes 0--99: 5,864 images.
-- Canonical seed-42 stratified image-level split: 4,687 fit and 1,177
-  validation IDs, matching accepted M1 IDs and split hash
-  `d9455ac8948ff640f94017339681a51744f6351f1db053732b3153a4c9c958ee`.
-- Benchmark classes 100--199: 5,924 images; ignore official CUB image split.
-- Training pair endpoints must both belong to fit; validation pair endpoints
-  must both belong to validation. Reject mixed fit/validation endpoints,
-  benchmark endpoints, and self-pairs in all training/tuning loaders.
-- Mine fit candidates using only fit query/gallery features. Existing E2A
-  validation rankings cannot be used to train the pair head.
-- Query/gallery are identical within each evaluated split, excluding self
-  by image ID. Preserve exact cosine, stable gallery-index ties and R@1/2/4/8.
-- Fit and validation contain the same classes but different images. This
-  limits assessment of class-generalization to unseen classes; report it.
-- Benchmark labels may be read by metric/failure-analysis code only after
-  checkpoint and lambda selection, never by sampling or scoring code.
+Development/Train: 4,687 images in classes 0–99.
+Development/Validation: 1,177 different images in those same classes.
+Final Test: all 5,924 images in classes 100–199, available only after the
+global lock for every branch and planned seed.
 
-Keep the selected fit-trained checkpoint for benchmark evaluation; do not
-automatically refit on all development images in this first E2B run.
+Training pair endpoints must both be in Train; validation endpoints both in
+Validation. Reject self-pairs, mixed partitions and Final Test endpoints.
+Mine candidates using only the current partition's features/gallery.
+Validation rankings cannot construct training pairs.
 
-## 4. Pair sampling and labels
+A label-aware sampler/evaluator may create targets, but the pair scorer
+accepts only features. Absolute class IDs, image IDs, rank positions,
+labels and confidence targets are never network inputs.
 
-Positive: distinct images of the same original class (`target=1`).
-Negative: images from different classes (`target=0`). No absolute class ID,
-image ID, rank index, uncertainty, or label is a network input.
+## 3. Preserve the existing pair-sampling protocol
 
-Initial deterministic recipe per fit query and epoch:
+Per Train query and epoch, retain the original E2B recipe:
 
-- 16 positives, sampled uniformly from its other same-class fit images;
-- 8 hard negatives, sampled from different-class candidates in its fit
-  cosine Top-100;
-- 8 random negatives, sampled from different-class fit images.
+- 16 positive pairs, uniform over other same-class Train images, target 1.
+- 8 hard-negative pairs, uniform over different-class candidates in its
+  own representation's Train cosine Top-100, target 0.
+- 8 random-negative pairs, uniform over different-class Train images,
+  target 0.
 
-Use replacement when a pool is too small, record repeated-pair frequency,
-and fall back to the random negative pool when no hard negative exists.
-Fail if no valid positive/negative pool exists. This yields 149,984 ordered
-pairs per epoch with a 1:1 positive/negative ratio. Persist sampling seed,
-epoch, pair IDs/targets or a losslessly reproducible sampling manifest.
+Use sampling with replacement only when the eligible pool is too small;
+record repeats. If the hard-negative pool is empty, fill from the random
+negative pool. Missing valid positive or negative pools are errors.
+There are 32 × 4,687 = 149,984 ordered pairs/epoch, half positive.
 
-**Static hard-negative mining:** mine fit Top-100 once from frozen M1 cosine
-features and persist/hash that candidate pool. Epochs resample negatives from
-this same pool; never update it online using Pair Confidence or learned
-fusion scores.
+Mine the Train cosine Top-100 once per frozen representation and persist it.
+Resample from the same static pool each epoch. Do not update hard negatives
+from pair scores or fusion. Sort eligible image IDs for deterministic sampling.
 
-**Preregistered orientation:** inference always uses
-`C(q,x) = sigmoid(MLP(concat(q,x,abs(q-x))))`, where MLP emits a logit.
-The first feature is always the query and the second the candidate.
-Random swap with seeded 50% probability is training augmentation only;
-it does not guarantee symmetry. Measure swap disagreement diagnostically,
-but do not switch inference to bidirectional averaging after inspecting the
-benchmark. Bidirectional averaging requires a separate preregistered ablation.
+Use keyed RNG streams (training_seed, epoch, query_id, pair_type) so positive
+and random-negative draws can be matched across branches. Use the same
+draw counts and seed policy for hard pools. The hard candidate identities
+will differ because the representations differ; record this explicitly.
+Training streams also specify a seeded 50% endpoint swap augmentation.
+Inference always remains query-first; augmentation does not prove symmetry.
 
-Validation uses **all** 117,700 ordered validation Top-100 pairs at their
-natural class-match prevalence, not a balanced resample. Persist pair IDs,
-targets, cosine scores and prevalence. Use separate names for balanced
-training metrics and natural-candidate validation metrics.
+There is no common M1 mining pool imposed on other methods. This preserves
+the existing representation-based mining rule and compares full pipelines.
+The experiment does not isolate a head's behavior on identical pairs.
+Report per-branch hard-pool statistics, pair repetition and candidate overlap;
+a fixed-common-pair ablation would require a separate declaration.
 
-## 5. Pair Confidence Network and optimization
+Validation uses all 1,177 × 100 = 117,700 ordered cosine candidate pairs at
+their natural match prevalence. Do not balance/resample the validation set.
+Persist IDs, targets, cosine and prevalence independently for each branch.
 
-For normalized frozen features `a,b`:
+## 4. Identical network and optimization policy
 
-```text
-input = concat(a, b, abs(a-b))             # 2304 dimensions
+For normalized frozen a,b:
+
+~~~text
+u = concat(a, b, abs(a-b))                    # 2304 dimensions
 Linear(2304,512) -> ReLU -> Dropout(0.1)
 Linear(512,128)  -> ReLU -> Dropout(0.1)
-Linear(128,1)                            # one logit
-pair_confidence = sigmoid(logit)          # inference only
-```
+Linear(128,1)                                # logit l
+C(a,b) = sigmoid(l)                          # inference score
+~~~
 
-Use `BCEWithLogitsLoss` without class weights for the balanced training
-recipe. Do not apply sigmoid before this loss. Initial recipe: seed 42,
-30 epochs, AdamW LR `1e-4`, weight decay `1e-4`, cosine scheduler,
-gradient clipping 5.0, global batch 4,096 pairs (2,048 per T4).
-Record actual batch sizes and parameter count. Reject NaN/Inf gradients
-with actionable epoch/batch diagnostics.
+Every branch has 1,245,953 learned pair-head parameters. Use the same
+initialization for a given seed: Linear Kaiming-uniform with a=sqrt(5),
+bias uniform in [-1/sqrt(fan_in),1/sqrt(fan_in)].
+Neither representation identity nor validation results change the architecture.
 
-Use FP32 for the first pair-head training run to avoid introducing another
-precision variable. AMP is a later separately declared optimization, not a
-silent recipe change. Backbone remains frozen with no gradients.
+Training loss for pair target y is
+BCE(l,y) = softplus(l) - y*l.
+Use BCEWithLogitsLoss directly on logits, unweighted for the balanced pairs.
+Do not apply sigmoid before the loss or claim the sigmoid is calibrated
+under natural retrieval prevalence.
 
-Checkpoint rule: lowest natural-candidate validation BCE computed from
-global summed FP64 loss/count; ties use the earliest epoch. Record validation
-retrieval as secondary diagnostics, not an alternate epoch-selection rule.
-Store model, optimizer, scheduler, epoch, metrics, sampling configuration,
-feature/split/config hashes and Git/environment provenance atomically.
+| Setting | All four pair branches |
+|---|---|
+| Epochs | 30 |
+| Global batch | 4,096 pairs, 2,048 per T4 for full batches |
+| Optimizer | AdamW lr 1e-4, betas (0.9,0.999), eps 1e-8 |
+| Weight decay | 1e-4 on all pair-head parameters |
+| Schedule | Cosine to zero over optimizer updates |
+| Gradient clipping | Global norm 5.0 |
+| Precision | FP32 head, BCE and backward |
+| Training seed | Shared roster; primary 42 |
+| Upstream representation | Frozen, identical split/cache controls |
 
-Because training pairs are balanced and selectively mined, the sigmoid is
-not automatically a calibrated probability under natural retrieval
-prevalence. Call it **pair confidence/compatibility score**, not proven
-`P(retrieval correct)`. Evaluate calibration explicitly; temperature/prior
-correction is outside the initial run and requires a separate plan.
+One complete epoch uses every sampled pair exactly once in a seeded order.
+There are 37 updates: 36 full batches and a final batch of 2,528 pairs
+(1,264 per T4). Do not pad the production dataset or drop this tail.
+For fixtures use explicitly weighted valid-sample masks if padding is needed.
 
-## 6. Retrieval, fusion and validation selection
+Checkpoint criterion is minimum natural-candidate validation mean BCE, then
+earliest epoch on an exact tie. Aggregate loss sums/counts globally in FP64;
+validate with dropout disabled. Validation Recall is diagnostic at this
+stage, not an alternative epoch-selection rule. The 30-epoch trajectory is
+the fixed initial checkpoint search; other optimizer/architecture grids are
+singleton. Any additional tuning requires the same declared budget and
+search space in every branch and completion before the global lock.
 
-Create the baseline exact cosine Top-100 candidate list once per split.
-Score only these candidates; pair inference receives features, not labels.
-For each candidate apply the documented raw-score formula:
+Write model/optimizer/scheduler, RNG/sampler states, selected epoch,
+validation loss, all provenance hashes and selection trace atomically.
+Keep the selected Train-trained head; do not refit on Train+Validation.
 
-`score = lambda * cosine + (1-lambda) * pair_confidence`.
+## 5. Fusion and selection
 
-Do not add per-query min-max normalization or an unplanned affine transform.
-Cosine lies in `[-1,1]`, confidence in `[0,1]`; lambda is a fusion coefficient,
-not a calibrated mixture of probabilities. Persist the exact score convention.
+For query q and candidate x in its cosine Top-N:
 
-Evaluate **N in {10, 20, 50, 100}** for Image Uncertainty, Pair-wise
-Confidence, and Fusion. Candidates beyond N retain their baseline order and
-cannot be promoted. N=100 remains the primary comparison, while all four
-budgets are saved for controlled analysis. Stable score ties preserve original
-cosine order. `lambda=1`
-must return the original baseline ranking exactly without an extra sort.
+~~~text
+score(q,x) = lambda * cosine(q,x) + (1-lambda) * C(q,x)
+~~~
 
-After freezing the BCE-selected checkpoint, evaluate every N/lambda
-combination on validation and test. Select lambda on the N=100 validation row from
-`{0,0.25,0.5,0.75,0.9,1}` by integer Hits@1 -> Hits@2 -> Hits@4 -> Hits@8
--> larger lambda (prefer the smaller learned intervention when all Hits tie).
-Save every N/lambda grid result and the decision trace. A winning lambda of 1 is a
-valid null result; do not exclude it to force an improvement.
+Cosine is in [-1,1], C in [0,1]. Preserve the raw formula without per-query
+min-max scaling, temperature fitting or score transforms. Lambda is a score
+weight, not a mixture of calibrated probabilities.
 
-Save `selection.json` with checkpoint/feature/split/config hashes, selected
-epoch, lambda, N, complete validation results and exact scoring/tie policy.
-Benchmark runner verifies it before scoring. This is an **E2B tuning record**,
-not a claim that the benchmark was untouched during E2A.
+The primary candidate budget is N=100. Within that list, sort scores
+descending and preserve original cosine order on exact ties.
+Candidates outside Top-N keep baseline order and cannot be promoted.
+At lambda=1 return the original cosine ranking directly to guarantee identity.
 
-Initial ablations: cosine-only, Top-100 pair-only (`lambda=0`) and selected
-fusion. Pair-only is candidate-constrained reranking, not exhaustive learned
-retrieval over all query--gallery pairs. N=50 and alternate architectures or
-sampling are deferred controlled ablations, not implicit additions.
+After freezing the BCE-selected checkpoint, select lambda independently per
+branch/seed on N=100 Validation from {0,0.25,0.5,0.75,0.9,1}.
+Choose maximum integer Hits@1, then Hits@2, Hits@4, Hits@8, then larger lambda.
+Persist every validation grid value and decision trace. Lambda=1 or a
+negative gain is a valid scientific result.
 
-## 7. Comparison methods and lineage
+Preserve N in {10,20,50,100} as secondary candidate-budget diagnostics.
+On Validation evaluate the full N/lambda grid from the same saved Top-100
+pair scores. The primary lambda is still selected only at N=100.
+On Final Test report primary N=100 cosine/pair/fusion tables plus
+preregistered N diagnostics using lambda=0 and the frozen primary lambda.
+Do not search a test lambda grid or retune lambda separately for test N.
+No classification threshold is needed for ranking; any future threshold
+must be fixed on Validation and declared before test.
 
-| Method | Representation/ranking | Role |
-|---|---|---|
-| B0 | Fixed M1 CLS + cosine | Shared baseline, 5,214 benchmark Hits@1 |
-| U1 | Same B0, ascending candidate image uncertainty within Top-N | E1-style control |
-| A1 | Raw 100-dimensional alpha vector + Euclidean L2 distance | Paper-faithful alpha/distance control |
-| A2 | L2-normalized alpha vector + cosine | Secondary representation adaptation |
-| P1 | Pair confidence reranking within cosine Top-100 | Component ablation |
-| F1 | Validation-selected cosine + pair fusion within Top-100 | Primary E2B treatment |
+## 6. Global lock and one final evaluation campaign
 
-Reuse E1 seed-42 full evidence, alpha and uncertainty, checking image IDs,
-class ordering, shapes, dtype, actual resolved model revision and feature
-provenance, not merely the historical `revision: main` config. Validation
-must use outputs of an E1 tuning head trained on fit only; E1 final-head
-outputs trained on all development images cannot tune validation controls.
-Use corresponding final outputs for benchmark controls and disclose their
-different training-data budgets relative to the fit-only pair network.
+After E2A/E2B validation is complete for the declared seeds, create
+global_lock.json with protocol version, timestamp, seed roster, common split,
+backbone/processor/evaluator hashes, all four representation freeze records,
+all pair-head selections, fixed N/lambda policy, reliability definitions,
+statistical analysis plan and qualitative selection rules.
+Include all checkpoint/config hashes and a SHA-256 of the lock payload.
 
-If cache provenance differs, stop reuse and document a controlled re-export
-or retraining procedure before comparing. Historical E1 scores remain a
-separate context table, not results of the new controlled B0 run. Do not
-compare historical and current cache runs as if reranking were the only change.
+The final runner refuses partial rosters, changed hashes, missing selection
+traces, development overlap or unregistered settings. It never loads an
+optimizer or trains. Process Final Test only after successful verification,
+then score all planned methods/seeds in one campaign. Test labels enter
+metric/diagnostic computation after scoring, not the scorer.
 
-Input inspection found the historical E1 cache differs from accepted M1 and
-lacks full processor provenance. The implemented default is therefore
-`controls.source: controlled_retrain`: prepare a new seed-42 E1-style linear
-EDL tuning head on **raw accepted M1 CLS**, using the E1 30-epoch/lowest-EDL-
-validation-loss recipe (LR 0.001, weight decay 0.0001, KL annealing 10 epochs,
-FP32). Export full validation e/alpha/u, then retrain a freshly initialized
-head on all development images for the selected epoch count **during the
-validation stage**. Benchmark stage only forwards this frozen final head.
-Artifacts remain under E2B `controls/edl/`, never overwrite historical E1.
-This controlled rerun is not the accepted historical E1 result; report its
-head training budget and precision explicitly. `reuse_e1` remains available
-only when exact cache/provenance gates pass. Explicitly disabling controls
-records them unavailable rather than filling the table with old scores.
+Save a final-access log. An interrupted campaign may resume identical frozen
+work after validating hashes and existing outputs; no tuning is allowed.
+A genuine implementation error requires a documented invalidation and
+consistent recomputation of all affected rows. Prior exposure remains
+disclosed; do not relabel a corrective rerun as an untouched test.
 
-Sources:
+## 7. Reliability, statistics, and failure analysis
 
-- [EDL, arXiv:1806.01768v3](https://arxiv.org/abs/1806.01768v3),
-  evidence/alpha/uncertainty from the existing E1 implementation.
-- [Evidential Transformers, arXiv:2409.01082v2](https://arxiv.org/html/2409.01082v2),
-  CC BY 4.0, Sections 2.2/2.3. A1 follows Section 2.2: retrieve with raw alpha
-  and ascending Euclidean L2 distance, without L2-normalizing alpha. It is
-  paper-faithful in representation/distance only; reusing the E1 head on a
-  frozen DINOv3 backbone is still a system-level adaptation, not a complete
-  reproduction. A1 is an explicitly separate distance control: preserve
-  class/image splits, self-match exclusion, stable ties and Recall@K, while
-  keeping cosine unchanged for B0/P1/F1. A1 retrieves over its full gallery,
-  not just B0's Top-100. Save its own Top-100 IDs and distances with a distinct
-  distance schema, never mislabel them as cosine scores. A2 is the secondary
-  normalized-alpha + cosine adaptation; do not select A1 versus A2 on the
-  benchmark. Bhattacharyya experiments remain outside the initial scope.
-- The pair MLP and fusion are the repository's specified experimental design,
-  not claimed as a method from that evidential paper or as IDML reproduction.
+Primary endpoints are each of the four fusion-minus-matching-cosine
+Recall@1 differences in percentage points. Report all four with negative
+or zero outcomes. E2A cosine comparisons and pair-only effects are secondary.
+Use [the reporting plan](research_verification.md) for seed summaries,
+conditional uncertainty intervals and multiple-comparison limits.
 
-No third-party source code is planned for copying. Record equations,
-versions, licenses, deviations and implementation commit in provenance.
+Report Top-100 positive coverage:
+fraction of queries with at least one positive in the candidate set.
+For K<=100 it upper-bounds the achievable reranked Recall@K.
+Different candidate coverage is part of the representation effect.
 
-## 8. Metrics, reliability and failure analysis
+Reliability populations must remain separate:
 
-Primary: benchmark F1 minus B0 Recall@1. Secondary: Recall@2/4/8, Top-100
-candidate positive coverage, P1 and A1/U1 controls, per-query Hits and paired
-bootstrap 95% intervals (2,000 samples, seed 42). Bootstrap is exploratory
-under inherited selection bias; it does not remove that bias or measure
-training variance. Chunk its computation for GPU memory safety.
+1. All baseline Top-100 pairs: AUROC, average precision (define this as AP,
+   not an unspecified PR-area integral), BCE, Brier score, 10 equal-width
+   probability-bin ECE, reliability counts and positive prevalence.
+2. Original cosine top-1 pair: target is that fixed candidate's class match.
+   Compare cosine and its pair confidence via AUROC, AP and risk–coverage.
+3. Optional post-fusion top-1: use its own candidate/target and clearly
+   separate results from the original top-1 population.
 
-Report reliability on two distinct populations:
+Brier = mean((C-y)^2); ECE = sum_b (n_b/n)*|mean_b(C)-mean_b(y)|.
+Bins are [0,0.1), …, [0.9,1]; empty bins contribute zero.
+For risk–coverage sort confidence descending (image-ID ties), use risk
+1 - mean correctness in each retained prefix, and AURC as the mean prefix
+risk over coverages 1/n,…,1. Lower AURC is better. Undefined AUROC/AP cases
+must carry null and a reason. Do not treat cosine as a probability for ECE
+or Brier, and do not equate balanced training accuracy with retrieval recall.
 
-1. All baseline Top-100 candidate pairs: AUROC, AUPRC, BCE, Brier score,
-   fixed 10-bin ECE/reliability diagram and positive prevalence.
-2. Baseline top-1 correctness: score that unchanged top-1 pair, AUROC/AUPRC
-   and risk-coverage/AURC. Compare pair confidence with cosine and candidate
-   image certainty `1-u` on the same queries. Post-fusion top-1 diagnostics
-   are separate; never mix targets from one ranking with scores from another.
+Pair observations share images and galleries; do not use them as independent
+samples for significance. These diagnostics do not establish universal
+calibration, OOD detection or causality.
 
-Save undefined metric reasons when a tiny fixture has only one target class;
-do not manufacture a numeric AUROC. Do not report pooled candidate-pair
-observations as independent query-level statistical samples.
+Before test, fix examples as the first 8 query IDs per representation/category:
+wrong-to-correct, correct-to-wrong, still-wrong, still-correct (cosine vs fusion).
+Export every category count plus IDs, scores and contact sheets where available.
+Do not select only favorable examples. Final labels are permitted for this
+registered analysis after all models are locked.
 
-Select successes/failures by deterministic categories and image-ID ordering:
-wrong->correct, correct->wrong, still-wrong, still-correct. Persist IDs,
-labels, image paths, baseline/fused candidate IDs, cosine, confidence and
-fusion scores. Export PNG contact sheets showing query, cosine Top-1 and
-reranked Top-1, plus SVG Recall@1 curves over N and lambda. Labels are for
-analysis only. Do not cherry-pick after viewing
-qualitative results. Report single-seed results, not seed mean +/- std.
+## 8. Implementation, CUDA and tests
 
-## 9. Implementation phases and proposed files
+Proposed files (create only when functional):
 
-1. **Input gates:** strict E2B config, accepted M1 cache/selection loader,
-   canonical split checks, fit-only Top-100 mining and pair manifests.
-2. **Pair head:** MLP, seeded sampler, BCE/DDP training, validation BCE,
-   atomic checkpoint and numerical diagnostics.
-3. **Validation:** pair score export, exact constrained reranking, lambda
-   grid and tuning record. Accept artifacts before benchmark execution.
-4. **Benchmark/report:** frozen scoring, controls, reliability, bootstrap,
-   failure manifests, portable bundle and `reports/e2b.tex`.
-
-Proposed additions (create only when functional):
-
-```text
-configs/cub_e2b.yaml
+~~~text
+configs/cub_e2b_{m1,m2,m3,m4}.yaml
 src/uncertainty_retrieval/config_e2b.py
 src/uncertainty_retrieval/data/pair_cache.py
-src/uncertainty_retrieval/sampling/{__init__,pairs}.py
+src/uncertainty_retrieval/sampling/pairs.py
 src/uncertainty_retrieval/models/pair_confidence.py
 src/uncertainty_retrieval/training/pair_confidence.py
-src/uncertainty_retrieval/evaluation/pair_confidence.py
+src/uncertainty_retrieval/evaluation/{pair_confidence,artifacts}.py
 scripts/{prepare_e2b_pairs,train_e2b,evaluate_e2b,run_e2b}.py
-scripts/prepare_e2b_controls.py
+scripts/{lock_e2ab,run_e2ab_final,verify_e2ab_outputs}.py
 tests/unit/test_{config_e2b,pairs,pair_confidence,pair_reranking,e2b_artifacts}.py
 tests/integration/test_e2b_smoke.py
-reports/e2b.tex
-```
+~~~
 
-Reuse CUB loading/split logic, cache hashes, environment metadata, cosine
-ranking, AUROC/AUPRC/AURC and paired bootstrap where semantics match.
-Do not route E2B through E1 config or Proxy Anchor training.
+Use both T4s with one process per GPU. BCE is additive, so DDP pair training
+does not require embedding all-gather. Weight unequal rank counts correctly.
+Disable dropout for two-rank gradient equivalence against the same single
+global batch. Keep optimizer and head on the assigned GPU, and preload
+small [N,768] feature matrices when memory permits.
 
-## 10. CUDA/DDP and correctness tests
+Shard extraction/query/pair inference without padding; merge by query ID
+and original candidate position. Rank 0 writes artifacts, other ranks
+synchronize; clean up the process group on success and error.
+Follow shared pinned-memory/worker/precision policy.
 
-Use both T4s for independent pair workloads. BCE is additive: shard global
-pair batches evenly across DDP ranks; no differentiable global gather is
-needed. Ensure equal step counts and sample-weighted global loss reductions.
-For training tail padding, record duplicated samples or use an explicitly
-equal-sized deterministic batch policy. Distributed validation/inference
-must cover each real pair/query exactly once without padding duplicates.
+Test all four identical architectures/counts, branch-provenance rejection,
+deterministic 16/8/8 sampling and fallback, static pools across epochs,
+query-first inference, target boundaries and no validation/test gradients.
+Test valid tail batches, checkpoint ties, exact lambda=1 identity,
+lambda=0, stable ties, Top-N membership and out-of-N order, coverage ceiling,
+hand-computed metrics, lock tampering/missing branches, and artifact reload.
 
-Pair features/batches/loss remain on the local GPU; cached CPU features may
-be staged once per process when memory permits. CPU workers never allocate
-CUDA tensors. Use pinned memory, nonblocking transfers, persistent workers,
-prefetching and configurable inference chunks. Split query rows across GPUs,
-merge by IDs and original candidate position, write artifacts only on rank 0.
-Always clean up the process group, including error paths.
+Run compileall and the full pytest suite with mocked model downloads.
+GPU equivalence and leakage tests must pass before real training.
+Runtime evidence remains pending until these implementations exist.
 
-Focused unit tests must cover:
+## 9. Artifacts and expected commands
 
-- no fit/validation/test endpoint leakage or self-pairs; label correctness;
-  deterministic mining, hard-negative fallback and orientation sampling;
-- `[B,2304]` inputs, finite logits/BCE gradients, frozen features, sigmoid
-  range and model checkpoint/config/cache/split mismatch rejection;
-- lambda endpoints, exact B0 identity at lambda=1, stable ties, Top-N
-  membership preservation and hand-computed Recall/Hits;
-- static fit mining unchanged across epochs; fixed query-first inference
-  despite training swaps; no automatic bidirectional averaging;
-- A1 raw-alpha Euclidean distances on a hand-computed fixture, no alpha
-  normalization, full-gallery ranking and distance-schema correctness;
-- shard merge without duplicates/missing pairs, score/ID alignment;
-- FP32 Recall round-off acceptance but rejection of one-hit mismatch;
-- full e/alpha/u reuse validation and rejection of final-head validation
-  tuning artifacts; benchmark labels unavailable to scorer/trainer;
-- required outputs and portable export; do not declare success before
-  writing/verifying every required artifact.
+Per branch: outputs/e2b_pair_confidence/<representation>/<run_id>/seed_<seed>/.
 
-Add a separate two-rank BCE loss/gradient equivalence test against one-device
-global-batch computation (disable dropout for equivalence). It is not part of
-the initial tiny test subset. Tiny integration smoke uses mocked checkpoints,
-one optimizer step and synthetic pairs; no real model download.
+~~~text
+config_resolved.yaml, environment.json, metadata.json
+inputs/{representation_freeze,embedding_manifest,split_manifest}.json
+pairs/{train_static_top100,validation_top100}.pt
+pairs/sampling_manifest.json
+checkpoints/best.pt
+training/{history,selection_trace}.json
+selection.json
+scores/{validation,test}_top100.pt
+rankings/{validation,test}_{cosine,pairwise,fusion}.pt
+metrics/{validation,test}.json
+metrics/validation_n_lambda_grid.json
+metrics/test_n_diagnostics.json
+reliability/{validation,test}.json
+failure_cases/
+~~~
 
-## 11. Artifact layout and execution contract
+Store score IDs, cosine, raw logits, confidence, selected fusion score,
+checkpoint/representation hashes, lambda, N and schema. Targets belong in
+an analysis view and never the scorer input.
 
-```text
-outputs/e2b_pair_confidence/seed_42/
-├── config_resolved.yaml, environment.json, metadata.json
-├── inputs/{m1_manifest,e2a_selection,e1_provenance}.json
-├── split/{fit_image_ids,validation_image_ids}.pt
-├── pairs/{fit_sampling_manifest,validation}.pt
-├── checkpoints/best.pt
-├── selection.json
-├── scores/{validation,test}_top100.pt
-├── rankings/{validation,test}_{baseline,pair,fusion}.pt
-├── rankings/{validation,test}_fusion_n{N}_lambda{value}.pt
-├── metrics/{validation,test}_topn_lambda_grid.json
-├── controls/{validation,test}_U1_n{N}.pt
-├── failure_cases/{split}_{method}_n{N}.json
-├── figures/{split}_topn_lambda_recall1.svg
-├── figures/failure_cases/*.png
-└── export/                   # portable evidence bundle, not just summary
-```
+The joint export belongs under
+outputs/e2b_pair_confidence/<run_id>/export/seed_<seed>/ and contains:
 
-Scores contain query/candidate IDs, cosine, raw logits, confidence, targets
-for analysis, final scores, checkpoint hash, lambda, N and split. Rank
-artifacts retain candidate IDs/scores and per-query Hits. Inputs include the
-CLS cache path/hash; raw embeddings need not be duplicated. Export includes
-configs, tuning record, checkpoints, scores, rankings, metrics and failures;
-print absolute output paths and verify required files before ZIP handoff.
+- cosine_results.csv, pairwise_results.csv, fusion_results.csv; each exactly
+  four M1–M4 rows, with columns representation,R@1,R@2,R@4,R@8 in percent.
+- metadata.json mapping CSV rows to integer hits, n_queries, split, seed,
+  N/lambda, protocol and checkpoint hashes; validation and test stay separate.
+- selected M3/M4 checkpoints and all four selected pair-head checkpoints.
+- resolved configs, seeds, split manifest, global lock, training logs,
+  source/environment provenance, scores, rankings and analysis files.
+- raw embeddings or portable relative-path manifests with their required
+  tensors included; no broken absolute paths to another machine.
 
-After implementation, expected commands are:
+A top-level multi-seed summary is separate from the required four-row
+per-seed CSVs. Verify the export from a fresh directory by reloading
+artifacts, checking hashes, and recomputing all CSV metrics. Do not fill
+missing results with zero.
 
-```bash
-python scripts/run_e2b.py --config configs/<config_name>.yaml --stage validation
-python scripts/run_e2b.py --config configs/<config_name>.yaml --stage test
-```
+Expected interfaces after implementation:
 
-Validation prepares static fit pairs, prepares controlled EDL comparison
-heads when enabled, trains the pair head and selects checkpoint/lambda.
-Test reuses the frozen tuning record and never trains. Export is written to
-`outputs/e2b_pair_confidence/seed_42/export/` after required-file verification.
-The entry points now exist; execute on the target runtime after input setup.
+~~~bash
+torchrun --standalone --nproc_per_node=2 scripts/run_e2b.py --config configs/cub_e2b_m1.yaml --stage validation
+torchrun --standalone --nproc_per_node=2 scripts/run_e2b.py --config configs/cub_e2b_m2.yaml --stage validation
+torchrun --standalone --nproc_per_node=2 scripts/run_e2b.py --config configs/cub_e2b_m3.yaml --stage validation
+torchrun --standalone --nproc_per_node=2 scripts/run_e2b.py --config configs/cub_e2b_m4.yaml --stage validation
+python scripts/lock_e2ab.py --run-manifest outputs/e2b_pair_confidence/<run_id>/run_manifest.json
+torchrun --standalone --nproc_per_node=2 scripts/run_e2ab_final.py --lock outputs/e2b_pair_confidence/<run_id>/global_lock.json
+python scripts/verify_e2ab_outputs.py --export outputs/e2b_pair_confidence/<run_id>/export
+~~~
 
-Acceptance: reproducible validation selection; no endpoint leakage; intact
-score/ranking/provenance artifacts; common baseline reproduced from accepted
-M1 rankings; complete reliability/negative-result reporting. Lambda=1,
-negative Recall deltas, or uncalibrated confidence are valid findings, not
-reasons to silently alter the recipe.
+The branch configs/run manifest declare seeds and execute the corresponding
+roster before locking. These scripts are planned, not currently implemented.
+Completion requires every primary result, checkpoint, log and reproducibility
+artifact, irrespective of whether fusion improves Recall.

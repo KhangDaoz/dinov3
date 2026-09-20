@@ -10,7 +10,7 @@ This Python research repository studies DINOv3 representations and pair-wise con
 
 ## Fixed E2A–E2B Protocol
 
-Treat `docs/experiments/e2a-e2b-new.md` as the authoritative experiment protocol. Older plans under `docs/plan/` describe the superseded test-based-selection protocol and must not override it.
+Treat `docs/experiments/e2a-e2b-new.md` as the authoritative experiment protocol. Current plans under `docs/plan/` implement this protocol; consult `e2a_plan.md`, `e2b_plan.md`, `sources.md`, and `research_verification.md` there. Historical plan versions and older experiment notes describe a superseded protocol and must not override it.
 
 - Classes 0–99 are the Development Set. Within every class, create a deterministic 80% Train / 20% Validation image split. Train and Validation contain the same classes but must have disjoint image IDs. Persist the split manifest and seed; default to seed `42`.
 - Classes 100–199 are the Final Unseen Test Set. Keep all of these images intact and use them only after every representation, checkpoint, architecture, threshold, fusion coefficient, and hyperparameter has been frozen.

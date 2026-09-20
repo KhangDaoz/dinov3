@@ -1,292 +1,139 @@
-# E2A-M4 Implementation and Experiment Plan
+# E2A-M4: attention pooling representation plan
 
-## 1. Objective and representation
+Protocol: e2ab-v2. Status: proposed implementation; training is pending.
 
-E2A-M4 learns content-dependent weights over final-layer patch-token
-representations to form a global retrieval embedding while keeping the
-DINOv3 backbone frozen. For the 196 patch tokens
-$H_i\in\mathbb{R}^{196\times768}$:
+## 1. Representation
 
-\[
-q_{i,j}=w_2^\top\tanh(W_1h_{i,j}+b_1)+b_2,
-\qquad
-a_{i,j}=\operatorname{softmax}_{j}(q_{i,j}),
-\]
+Follow [the shared protocol](e2a_plan.md) and
+[the new specification](../experiments/e2a-e2b-new.md).
+For final patch matrix H_i with shape [196,768]:
 
-\[
-v_i=\sum_{j=1}^{196}a_{i,j}h_{i,j},
-\qquad
-z_i=\frac{v_i}{\lVert v_i\rVert_2}.
-\]
+~~~text
+t_ij = w2^T tanh(W1 h_ij + b1) + b2
+a_ij = softmax_j(t_ij)
+v_i  = sum_j a_ij h_ij
+z_i  = v_i / ||v_i||_2
+~~~
 
-Use attention hidden dimension 256 with `Linear(768,256)`, `tanh`, and
-`Linear(256,1)`. Do not add a value projection, output projection, CLS fusion,
-multi-head attention, dropout, uncertainty, or reranking. CLS and all four
-register tokens are excluded before attention. Softmax is only over the 196
-patch positions, and each row of attention weights must sum to one.
+Implement Linear(768,256), tanh, Linear(256,1), and weighted summation of
+the original patches. Softmax is over patch positions only. Exclude CLS and
+all four register tokens. There is no value/output projection, CLS fusion,
+dropout, or multi-head attention. Initialize weights with Xavier uniform and
+biases with zero using the run seed.
 
-Initialize both attention weights with Xavier uniform and biases with zero,
-using seed 42. The deployable attention module has 197,121 parameters. The
-100 training-only Proxy Anchor class proxies add 76,800 parameters, giving
-273,921 total optimized parameters for the E2A complexity tie-break.
+Deployed parameters: (768×256+256)+(256+1) = 197,121.
+With 100 training-only 768-dimensional proxies, optimized parameters total
+273,921. The scalar score bias cancels under softmax; retain it to preserve
+the specified architecture and report its redundancy.
 
-## 2. Controlled relationship to M1--M3
+This single attention scorer is a project design, not the DINOv3 author's
+attentive probe or an IDML/EDL method. See [sources](sources.md).
 
-Keep the accepted protocol unchanged: pinned DINOv3 ViT-B/16 revision,
-official 224-by-224 processor, fixed CUB manifests, exact cosine retrieval,
-image-ID self-match exclusion, stable gallery-index ties, Recall@1/2/4/8, and
-ordered Top-100 candidate IDs and scores.
+## 2. Common inputs and training
 
-M4 and M3 share Proxy Anchor, global batch construction, optimizer, learning
-rate, scheduler, gradient clipping, and checkpoint-selection protocol so that
-the learned aggregation is the principal change. Precision is specified
-separately for each pipeline. Use scale \(\alpha=32\), margin \(\delta=0.1\),
-class-balanced global batches, AdamW, and the same cited
-[Proxy Anchor paper](https://arxiv.org/abs/2003.13911) and
-[official implementation](https://github.com/sung-yeon-kim/Proxy-Anchor-CVPR2020).
-M4 remains a DINOv3 adaptation rather than an official reproduction.
+Use the shared development patch cache consumed by M2 and M3. Do not repeat
+mean vectors to synthesize patches. Every shard must match the common
+checkpoint, processor, source-layer semantics, extraction precision, CUB
+manifest and split hash.
 
-M1/M2 caches contain only `[11788,768]` global embeddings and cannot provide
-the per-patch inputs required by M4. Do not reconstruct or repeat mean vectors
-as fake patch tokens. Extract a dedicated development-only patch-token cache
-from the identical frozen checkpoint and processor.
+Expected development shape across shards is [5864,196,768].
+The primary cache is FP32; numerical extraction checks and memory/storage
+policy are defined once in the shared plan. Do not introduce M4-only FP16
+storage. Load CPU shards with memory mapping and transfer only local batches.
 
-## 3. Test isolation and class-generalization limitation
+Train the attention scorer and proxies using exactly the [M3 recipe](e2a_m3_plan.md):
+Proxy Anchor alpha=32, delta=0.1; 20×4 global batches (40 per T4),
+59 steps/epoch, 30 epochs, AdamW lr=1e-4, cosine schedule, clipping=5.0,
+FP32 heads/loss/backward, matching sampler image IDs and seed roster.
+Use the same weight-decay groups, proxy initialization and autograd-aware
+global-gather loss. Backbone gradients remain disabled.
 
-During M4 development, extract only development classes 0--99. Split these
-images with the canonical image-level 80/20 split: 4,687 fit and 1,177
-validation images. Fit and validation therefore contain different images but
-the same classes. Final test contains unseen classes 100--199, so validation
-does not directly measure class-generalization; state this limitation in the
-report.
+M3/M4 share labels, optimizer, sampling and checkpoint policy; their deployed
+parameter counts differ. Report this when interpreting attention gains.
+An additional parameter-matched architecture would be a separately planned
+ablation, not a silent modification of M4.
 
-No test patch feature, embedding, label, metric, or ranking may be generated,
-loaded, or inspected before all M1--M4 validation artifacts are accepted.
-Then run all M1--M4 pipelines on classes 100--199, extract M4 test patches,
-and select the E2A winner from test Hits@K. Never use test tokens to select an
-M3/M4 checkpoint or change the attention architecture. Because this split
-selects the method, it is not an untouched final test.
+## 3. Validation and freeze
 
-Seed 42 is the single preregistered M4 run and must control initialization,
-sampling, workers, and all training RNGs. Report a single-seed result, not
-mean~\(\pm\)~standard deviation, and record missing multi-seed variance as a
-limitation.
+Train on the 4,687 Train images, select on the shared 1,177 Validation images.
+Rank checkpoints by integer validation Hits@1, Hits@2, Hits@4, Hits@8, then
+earliest epoch. No test feature, label, ranking, or score enters this process.
 
-## 4. Patch-token cache
+Freeze the selected attention checkpoint, export Train/Validation [N,768]
+embeddings and pass them to E2B-M4. Keep the representation frozen throughout
+pair training. Do not refit on all development images.
+Repeat with matching upstream seeds for the registered publication roster.
 
-Extract DINOv3 output once with two T4 processes. Preserve token order
-`CLS, register, patch`, validate four register and 196 patch tokens, then save
-only final patch tokens. Backbone inference may use FP16 AMP; persist patch
-tokens as contiguous CPU FP16 to limit storage. Cast each training batch to
-FP32 before attention and Proxy Anchor computation.
+Final Test access requires the shared global lock after all E2A and E2B
+branches and declared seeds are complete. M4 completion alone does not open
+Final Test.
 
-The development tensor is approximately 1.8 GB. Save atomic rank shards
-rather than constructing a second merged tensor in RAM:
+## 4. Attention diagnostics
 
-```text
-outputs/e2a_attention_pool/cache/development/
-├── rank0.pt
-├── rank1.pt
-└── manifest.json
-```
+Store validation attention weights and normalized entropy:
 
-The manifest records shard hashes, image IDs, labels, split membership, shape,
-dtype, patch/register counts, checkpoint revisions, processor settings, CUB
-manifest hash, extraction command, Git state, and schema version. Load shards
-with memory mapping where supported and join logically by image ID. Reject
-duplicates, missing development IDs, test IDs, incorrect labels, non-finite
-tokens, wrong dimensions, or provenance differing from accepted M1/M2.
+~~~text
+normalized_entropy_i = -sum_j a_ij log(a_ij) / log(196)
+~~~
 
-The cache must contain exactly 5,864 development images shaped
-`[5864,196,768]` across its shards. Do not create the test cache during
-this phase.
+Use a stable zero-log-zero convention; entropy is in [0,1].
+Record effective support, entropy summaries and numerical validity.
+Use deterministic example selection by sorted image ID within categories
+declared before Final Test. Attention maps are descriptive aggregation
+weights; they do not establish bird-part localization or causal importance.
+No box/part annotation may influence training, checkpoint selection, or
+ranking in this experiment.
 
-Before accepting FP16 storage, run a deterministic fidelity check on a
-class-stratified subset of 128 development images. Retain the backbone's FP32
-patch output in memory, serialize the same tokens to FP16, reload and cast them
-to FP32, then compare paired tensors. Require every image's relative L2 error
-to be at most `1e-3`, minimum per-patch cosine similarity to be at least
-`0.99999`, and cosine similarity between the FP32 and round-trip mean-patch
-embeddings to be at least `0.99999`. Save subset IDs, summary statistics, and
-thresholds in the cache manifest. Reject FP16 caching if any threshold fails;
-fall back to FP32 shards rather than weakening thresholds after inspection.
+If test attention plots are included, declare them in the global lock and
+generate them as final diagnostics. They cannot trigger retraining.
 
-## 5. Training and checkpoint selection
+## 5. Implementation and artifacts
 
-Train only the attention scorer and Proxy Anchor proxies. Use the M3 recipe:
+Add configs/cub_e2a_m4.yaml and AttentionPatchPooling in
+models/representations.py. Extend shared data/feature_cache.py for patch
+shards and training/representation.py for the M4 module. Reuse the common
+extract/train/evaluate/run scripts and evaluator.
 
-- global batch: 20 classes by 4 images = 80; local batch 40 per T4;
-- DDP: one process per T4 with differentiable global embedding gather;
-- epochs: 30;
-- optimizer: AdamW, learning rate `1e-4`;
-- weight decay: `1e-4` for attention weights, zero for biases and proxies;
-- scheduler: cosine decay to zero per optimizer update;
-- precision: FP32 attention, normalization, cosine logits, log-sum-exp, loss,
-  and backward;
-- gradient clipping: global norm 5.0;
-- checkpoint evaluation: every epoch;
-- deterministic seed: 42 everywhere.
+Output root: outputs/e2a_attention_pool/<run_id>/seed_<seed>/.
 
-Select the checkpoint lexicographically by integer validation counts:
-Hits@1, then Hits@2, Hits@4, Hits@8, then earliest epoch. Do not use a
-floating-point tolerance for epoch selection. The E2A pipeline winner rule
-uses the same integer ordering on test: Hits@1, Hits@2, Hits@4, Hits@8,
-total optimized parameter count, then fixed M1--M4 order.
+Save config_resolved.yaml, environment.json, metadata.json, input patch/split
+manifests, checkpoints/best.pt, training history/sampling/selection trace,
+embeddings/{train,validation}.pt, embeddings/manifest.json,
+rankings/validation_top100.pt, metrics/validation.json,
+attention/{validation_weights,validation_entropy}.pt, and freeze.json.
 
-Use the same tested DDP global-gather semantics as M3. Add an M4-specific
-single-device versus two-rank test comparing loss and gradients for attention
-weights and proxies on the identical global batch.
+Checkpoints contain attention/proxies, optimizer/scheduler, epoch/global step,
+RNG/sampler states, validation hits, cache/split/config/code hashes and
+parameter counts. Final Test artifacts are appended only by the locked final
+campaign. Intermediate cache shards stay separate from portable run bundles
+and are referenced with relative manifests and hashes.
 
-## 6. Implementation phases
+## 6. Tests and acceptance
 
-### Phase A -- Configuration and model
+Test attention shape, positive weights summing to one, finite entropy bounds,
+uniform scores reducing to M2 mean, and invariance to patch permutation.
+Use CLS/register sentinel values to prove their exclusion. Reject empty or
+wrong token dimensions, invalid raw embeddings and stale/mixed cache shards.
 
-Add `configs/cub_e2a_m4.yaml` and an exact M4 contract in `config_e2a.py`:
-method `m4`, representation `attention_pool`, source `final_patch`, attention
-hidden dimension 256, output dimension 768, and FP32 training. Keep M1--M3
-configs backward compatible and reject CLS fusion, register pooling,
-projection heads, uncertainty, and reranking.
+Verify hand-computed weighted pooling, initialization, parameter counts,
+and attention/proxy gradients. The scalar output bias may have zero gradient;
+that does not justify requiring nonzero gradients for every scalar parameter.
 
-Add `AttentionPatchPooling` to `models/representations.py`. Return both the
-pooled embedding and attention weights through a typed output. Validate input
-shape, finite values, normalized attention weights, output shape, and zero
-access to CLS/register fields.
+Compare single-device and two-rank global-batch loss and gradients for
+attention weights and proxies. Test data split isolation, deterministic
+resume, integer-hit epoch ties, checkpoint/cache mismatch, and final-lock
+failure when any pair branch is missing.
 
-### Phase B -- Development patch extraction
+Run source compilation and the complete pytest suite, including mocked CUB
+and synthetic token integration tests. GPU parity tests must be run on the
+target T4 runtime or explicitly recorded as pending.
 
-Add `data/patch_token_cache.py` and extend `extract_e2a_features.py` or add a
-focused patch-token extraction mode. The extraction dataset must be filtered
-to `record.split == "development"` before image decoding. DDP shards must use
-image ID as the unique merge key and must not contain sampler-padding
-duplicates in the final logical manifest.
+Expected command after implementation:
 
-Cross-check the checkpoint, processor, image IDs, labels, and CUB hash against
-accepted M1/M2 manifests. Cache reuse is all-or-nothing; partial or stale
-shards trigger explicit rejection rather than silent mixing.
+~~~bash
+torchrun --standalone --nproc_per_node=2 scripts/run_e2a.py --config configs/cub_e2a_m4.yaml --stage validation
+~~~
 
-### Phase C -- Training
-
-Generalize `M3TrainingModel` and `training/representation.py` into reusable
-learned-representation training without changing M3 behavior. Reuse the
-class-balanced sampler, global differentiable gather, integer Hits checkpoint
-selection, atomic checkpointing, and provenance checks.
-
-Save attention state, training-only proxies, optimizer/scheduler state,
-selected epoch, integer validation hits, Recall@K, cache/config/split hashes,
-parameter counts, and environment in `checkpoints/best.pt`. Rank 0 alone
-writes after a distributed barrier.
-
-### Phase D -- Validation export and reporting
-
-Extend `evaluate_e2a.py` to load the selected attention checkpoint and export
-FP32 fit/validation embeddings. Also store validation attention weights as
-FP16 plus per-image attention entropy for diagnostic and interpretability
-analysis. These weights are not evidence of object localization, part
-localization, or causal feature importance, and they never alter ranking.
-
-Save exact validation cosine Top-100 and recompute Recall@K from its serialized
-candidate IDs. Update `reports/e2a.tex` with all M1--M4 validation rows,
-M4-minus-M1 and M4-minus-M3 deltas, selected epoch, parameter counts,
-single-seed qualification, and class-generalization limitation. Only after
-artifact acceptance may the registered test-selection command evaluate all
-four methods and declare a winner; do not declare one inside training.
-
-## 7. Planned files
-
-```text
-configs/cub_e2a_m4.yaml
-src/uncertainty_retrieval/config_e2a.py
-src/uncertainty_retrieval/data/patch_token_cache.py
-src/uncertainty_retrieval/models/representations.py
-src/uncertainty_retrieval/training/representation.py
-scripts/extract_e2a_features.py
-scripts/train_e2a.py
-scripts/evaluate_e2a.py
-scripts/run_e2a.py
-tests/unit/test_config_e2a.py
-tests/unit/test_patch_token_cache.py
-tests/unit/test_representations.py
-tests/unit/test_representation_training.py
-tests/unit/test_m4_ddp.py
-tests/integration/test_e2a_m4_smoke.py
-reports/e2a.tex
-```
-
-Prefer extending shared E2A code where semantics are identical. Preserve all
-accepted M1--M3 artifacts and schemas.
-
-## 8. Artifact contract
-
-```text
-outputs/e2a_attention_pool/m4/seed_42/
-├── config_resolved.yaml
-├── environment.json
-├── metadata.json
-├── inputs/patch_token_manifest.json
-├── split/
-│   ├── fit_image_ids.pt
-│   ├── validation_image_ids.pt
-│   └── manifest_hash.txt
-├── checkpoints/best.pt
-├── training/history.json
-├── embeddings/
-│   ├── fit.pt
-│   ├── validation.pt
-│   └── manifest.json
-├── attention/
-│   ├── validation_weights.pt
-│   └── validation_entropy.pt
-├── rankings/validation_top100.pt
-└── metrics/validation.json
-```
-
-No test artifact may exist during M4 training or checkpoint selection.
-Validation Top-100 must have shape `[1177,100]`, contain only validation
-candidates, exclude self-match, store finite descending cosine scores, and
-reproduce metrics JSON exactly. The later test artifact follows the same
-contract with 5,924 queries.
-
-## 9. Focused tests and acceptance
-
-Unit tests must cover:
-
-- strict M4 config and forbidden field combinations;
-- attention output/weight shapes, softmax sums, finite FP32 behavior, exact
-  exclusion of CLS/register tokens, gradients, initialization, and parameter
-  counts;
-- patch cache sharding, memory-mapped loading, ID-order reconstruction,
-  hashes, development-only enforcement, corruption/provenance failures, and
-  the preregistered FP16 round-trip fidelity thresholds;
-- fit/validation membership with zero overlap and no unseen-class row;
-- class-balanced sampling and integer Hits epoch tie rule;
-- Proxy Anchor loss and gradient equivalence between two-rank differentiable
-  gather and the identical single-device global batch for attention/proxies;
-- checkpoint and cache hash mismatch rejection;
-- attention entropy bounds, Top-100 integrity, metric recomputation, and
-  test Top-100 result integrity.
-
-During implementation, run only focused M4 unit tests. Leave the complete
-suite, DDP/integration smoke test, patch extraction, and training experiment
-to the user.
-
-Accept M4 only when all cache shards and checkpoint provenance validate, the
-selected epoch follows integer Hits ordering, no validation/test row supplied
-a training gradient, M1--M4 use identical validation IDs, all embeddings and
-rankings pass integrity checks, and no test artifact exists. M4 acceptance
-completes validation comparison; test-based winner selection is a separate
-subsequent step.
-
-## 10. Execution
-
-After focused tests pass, run on two T4 GPUs:
-
-```bash
-python scripts/run_e2a.py \
-  --config configs/cub_e2a_m4.yaml \
-  --stage validation
-```
-
-The runner performs development patch extraction (or validates an existing
-cache), M4 training, embedding/attention export, and validation retrieval.
-Later, `--stage test` extracts a separate test-only patch cache, reuses the
-frozen validation-selected checkpoint, and saves test Top-100 artifacts.
+Acceptance requires the selected checkpoint, development exports, diagnostic
+artifacts and integrity tests. Every accepted M4 run continues into E2B-M4,
+regardless of its relative validation rank.

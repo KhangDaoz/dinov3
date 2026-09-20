@@ -50,9 +50,12 @@ riêng cosine similarity, pair confidence, cùng phép fusion. Chỉ sau khi kh�
 checkpoint và `lambda` của cả bốn nhánh mới được chạy Final Test.
 
 Protocol mới đầy đủ nằm tại
-[E2A–E2B new protocol](docs/experiments/e2a-e2b-new.md). Các kế hoạch cũ trong
-`docs/plan/` mô tả protocol test-based selection trước đây và không được dùng
-để lựa chọn model cho lần chạy mới.
+[E2A–E2B new protocol](docs/experiments/e2a-e2b-new.md). Các plan hiện tại trong
+[`docs/plan/`](docs/plan/e2a_plan.md) đã được cập nhật theo protocol này; xem
+[nguồn tham khảo](docs/plan/sources.md),
+[xác minh checkpoint/processor](docs/plan/dinov3_model_verification.md) và
+[kiểm chứng nghiên cứu](docs/plan/research_verification.md). Các phiên bản plan
+cũ trong Git history và ghi chú experiment cũ không được ghi đè protocol mới.
 
 ## Dữ liệu và protocol đánh giá
 
